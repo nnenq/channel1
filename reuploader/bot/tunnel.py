@@ -86,6 +86,17 @@ def _spawn(exe, local_url, log_path):
     return subprocess.Popen([exe, "tunnel", "--no-autoupdate", "--url", local_url], **kwargs)
 
 
+def stop_saved_tunnel(data_dir):
+    """Задан постоянный PUBLIC_URL — старый туннель Cloudflare больше не нужен."""
+    state_path = Path(data_dir) / "tunnel.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    kill(state.get("pid"))
+    state_path.unlink(missing_ok=True)
+
+
 async def ensure_tunnel(exe, local_url, data_dir, check=healthy, wait=60):
     """-> (url, reused). url=None, если поднять туннель не удалось."""
     state_path = Path(data_dir) / "tunnel.json"

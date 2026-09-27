@@ -14,7 +14,7 @@ from aiohttp import web
 from . import fmt
 from .cutjobs import CutWorker, job_dir
 from .db import DB, iso, utcnow
-from .tunnel import ensure_tunnel
+from .tunnel import ensure_tunnel, stop_saved_tunnel
 from .scheduler import Scheduler, describe_slot
 from .settings import load_settings
 from .telegram import TG, esc
@@ -400,6 +400,9 @@ async def main():
         url_changed = False
         if s.public_url:
             bot.public_url = s.public_url
+            stop_saved_tunnel(s.data_dir)
+            url_changed = db.get_meta("last_public_url") not in (None, s.public_url)
+            db.set_meta("last_public_url", s.public_url)
         else:
             exe = find_cloudflared(s.cloudflared)
             if exe:

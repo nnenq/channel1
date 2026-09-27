@@ -108,8 +108,10 @@ class WebApp:
 
     @staticmethod
     def from_internet(request):
-        """Запрос пришёл через туннель Cloudflare (а не с этого компьютера)."""
-        return "Cf-Connecting-Ip" in request.headers or "Cf-Ray" in request.headers
+        """Запрос пришёл через туннель (Cloudflare или Tailscale Funnel), а не с этого компьютера."""
+        h = request.headers
+        return any(k in h for k in ("Cf-Connecting-Ip", "Cf-Ray", "Tailscale-Funnel-Request",
+                                    "X-Forwarded-For", "Forwarded"))
 
     @web.middleware
     async def auth_mw(self, request, handler):

@@ -18,13 +18,13 @@ if not exist .venv (
   %PY% -m venv .venv || (pause & exit /b 1)
 )
 echo [2/3] Ставлю библиотеки (пара минут)...
-.venv\Scripts\python -m pip install --upgrade pip -q
-.venv\Scripts\python -m pip install -r requirements.txt -q || (pause & exit /b 1)
+.venv\Scripts\python -m pip install --upgrade pip -q --no-cache-dir
+.venv\Scripts\python -m pip install -r requirements.txt -q --no-cache-dir || (pause & exit /b 1)
 
 if not exist bin mkdir bin
 if not exist bin\cloudflared.exe (
   echo [3/3] Скачиваю cloudflared для HTTPS-адреса мини-апки...
-  powershell -NoProfile -Command "Invoke-WebRequest -UseBasicParsing -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile bin\cloudflared.exe"
+  powershell -NoProfile -Command "$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile bin\cloudflared.exe"
 )
 
 if not exist .env (

@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS projects (
     fixed_times TEXT NOT NULL DEFAULT '["13:00","16:00"]',
     privacy TEXT NOT NULL DEFAULT 'public',
     strategy TEXT NOT NULL DEFAULT 'rotate',
-    sort_by TEXT NOT NULL DEFAULT 'views',
+    sort_by TEXT NOT NULL DEFAULT 'trend',
     delivery TEXT NOT NULL DEFAULT 'youtube',
     max_age_days INTEGER NOT NULL DEFAULT 0,
     effects TEXT NOT NULL DEFAULT '{}',
@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS slots (
     info TEXT
 );
 CREATE INDEX IF NOT EXISTS slots_due ON slots(status, run_at);
+-- Замеры просмотров роликов каналов-источников: по ним считается прирост "сейчас"
+CREATE TABLE IF NOT EXISTS view_snapshots (
+    video_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    views INTEGER NOT NULL,
+    exact INTEGER NOT NULL DEFAULT 0,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS snapshots_video ON view_snapshots(video_id, at);
+CREATE INDEX IF NOT EXISTS snapshots_channel ON view_snapshots(channel, at);
 """
 
 # Колонки, добавленные после первой версии: (таблица, колонка, определение)
@@ -119,6 +129,10 @@ class DB:
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
         self.lock = threading.RLock()
+        # Разовый переход на логику "сначала то, что в тренде сейчас"
+        if self.get_meta("trend_default") is None:
+            self.x("UPDATE projects SET sort_by = 'trend' WHERE sort_by = 'views'")
+            self.set_meta("trend_default", 1)
 
     def q(self, sql, *args):
         with self.lock:
@@ -156,7 +170,8 @@ class DB:
         return self._decode(self.one("SELECT * FROM projects WHERE id = ?", pid))
 
     def create_project(self, name):
-        return self.x("INSERT INTO projects(name, created_at) VALUES(?, ?)", name, iso(utcnow()))
+        return self.x("INSERT INTO projects(name, sort_by, created_at) VALUES(?, 'trend', ?)",
+                      name, iso(utcnow()))
 
     def update_project(self, pid, **fields):
         fields = {k: v for k, v in fields.items() if k in PROJECT_FIELDS}
@@ -245,6 +260,38 @@ class DB:
                            AND p.privacy = 'scheduled' AND p.delivery != 'telegram'
                            AND (p.enabled = 1 OR s.kind = 'manual')
                          ORDER BY s.run_at""", not_before_iso)
+
+    # --- замеры просмотров ---
+    def last_snapshot_at(self, channel):
+        row = self.one("SELECT MAX(at) AS at FROM view_snapshots WHERE channel = ?", channel)
+        return from_iso(row["at"]) if row and row["at"] else None
+
+    def add_snapshots(self, channel, videos, at_iso):
+        with self.lock:
+            self.conn.executemany(
+                "INSERT INTO view_snapshots(video_id, channel, views, exact, at) VALUES(?, ?, ?, ?, ?)",
+                [(v["id"], channel, int(v["view_count"]), int(bool(v.get("exact"))), at_iso)
+                 for v in videos if v.get("view_count") is not None])
+
+    def snapshot_before(self, video_id, exact, before_iso, not_older_iso):
+        """Последний замер ролика (той же точности) не позже before и не раньше not_older."""
+        return self.one("""SELECT views, at FROM view_snapshots
+                           WHERE video_id = ? AND exact = ? AND at <= ? AND at >= ?
+                           ORDER BY at DESC LIMIT 1""", video_id, int(exact), before_iso, not_older_iso)
+
+    def snapshot_oldest_after(self, video_id, exact, after_iso, before_iso):
+        return self.one("""SELECT views, at FROM view_snapshots
+                           WHERE video_id = ? AND exact = ? AND at >= ? AND at <= ?
+                           ORDER BY at ASC LIMIT 1""", video_id, int(exact), after_iso, before_iso)
+
+    def prune_snapshots(self, older_than_iso):
+        self.x("DELETE FROM view_snapshots WHERE at < ?", older_than_iso)
+
+    def all_source_channels(self):
+        """Каналы-источники включённых проектов и токен любого из их проектов (для точных просмотров)."""
+        return self.q("""SELECT s.url, MAX(p.token_path) AS token_path
+                         FROM sources s JOIN projects p ON p.id = s.project_id
+                         WHERE p.enabled = 1 GROUP BY s.url""")
 
     def set_slot(self, sid, status, info=None, **extra):
         cols = ["status = ?", "info = ?"] + [f"{k} = ?" for k in extra]

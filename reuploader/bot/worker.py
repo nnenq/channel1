@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from ..pipeline import build_text, pick, prepare
 from ..source import enrich
+from . import trends
 
 SHORT_ID = re.compile(r"(?:shorts/|v=|youtu\.be/)([\w-]{11})")
 
@@ -90,7 +91,8 @@ def run_slot(db, settings, slot):
             picked = pick(sources, db.uploaded_ids(project["id"]), count=1,
                           strategy=project["strategy"], sort_by=project["sort_by"],
                           max_age_days=project["max_age_days"],
-                          enrich=(lambda vs: enrich(vs, youtube)) if youtube else None)
+                          enrich=(lambda vs: enrich(vs, youtube)) if youtube else None,
+                          trend=trends.hook(db))
         except Exception as e:  # noqa: BLE001
             return Result("failed", "не удалось получить список видео: " + _error_text(e))
         if not picked:
@@ -135,6 +137,7 @@ def run_slot(db, settings, slot):
     extra = {"views": views, "published": info.get("published"),
              "duration": info.get("duration") or meta.get("duration"),
              "views_per_day": info.get("views_per_day"),
+             "trend_per_day": info.get("trend_per_day"), "hot": info.get("hot"),
              "description": description, "tags": tags, "source_url": url}
     if keep:
         extra.update(file=str(out), work=str(work))

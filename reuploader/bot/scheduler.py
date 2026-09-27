@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from .db import from_iso, iso, needs_youtube, utcnow
 from .planner import day_bounds, parse_hhmm, plan_auto
 from .telegram import esc
+from . import trends
 from .worker import run_slot
 
 log = logging.getLogger("scheduler")
@@ -139,12 +140,28 @@ class Scheduler:
                 return None
         return t.astimezone(self.s.tz)
 
+    async def snapshot(self):
+        """Раз в ~2 часа замеряем просмотры роликов на каналах-источниках (для «тренда»)."""
+        from .. import source
+        from ..uploader import youtube_client
+
+        if self.busy.locked():
+            return
+        async with self.busy:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, trends.snapshot_all, self.db, source.list_shorts,
+                                       source.enrich, youtube_client)
+
     async def loop(self):
         self.db.reset_stuck()
+        last_snapshot = None
         while True:
             try:
                 self.plan_all()
                 await self.run_due()
+                if not last_snapshot or utcnow() - last_snapshot >= timedelta(minutes=10):
+                    last_snapshot = utcnow()
+                    await self.snapshot()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

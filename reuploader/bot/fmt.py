@@ -48,9 +48,11 @@ def original_line(extra, tz):
         parts.append(f"📅 {when} ({ago(age)})")
     if extra.get("duration"):
         parts.append(f"⏱ {duration(extra['duration'])}")
+    if extra.get("trend_per_day"):
+        parts.append(f"{'🔥 ' if extra.get('hot') else ''}+{views(extra['trend_per_day'])} за сутки")
     per_day = extra.get("views_per_day")
     if per_day is None and age is not None and extra.get("views") is not None:
         per_day = int(extra["views"] / max(age, 1))
     if per_day is not None:
-        parts.append(f"≈{views(per_day)}/день")
+        parts.append(f"≈{views(per_day)}/день в среднем")
     return " · ".join(parts)

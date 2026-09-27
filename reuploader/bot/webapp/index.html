@@ -82,6 +82,7 @@ const tg = window.Telegram?.WebApp;
 tg?.ready(); tg?.expand();
 const $root = document.getElementById("root");
 const STATUS = { planned: "🕒", running: "⏳", done: "✅", failed: "❌", skipped: "⏭" };
+const SORT_BY = [["trend", "🔥 В тренде"], ["views", "Всего просмотров"], ["per_day", "В среднем/день"]];
 const DELIVERY = [["youtube", "На YouTube"], ["telegram", "Мне в Telegram"], ["both", "Оба"]];
 const PRIVACY = [["scheduled", "Запланировать"], ["public", "Сразу"], ["unlisted", "По ссылке"], ["private", "Приватное"]];
 let state = {};
@@ -221,15 +222,16 @@ async function showProject(id, data) {
 
     <h2>Какие видео брать</h2>
     <div class="card">
-      <div class="row"><div class="seg">
-        <button class="${p.sort_by === "views" ? "on" : ""}" onclick="patch({sort_by:'views'})">Больше всего просмотров</button>
-        <button class="${p.sort_by === "per_day" ? "on" : ""}" onclick="patch({sort_by:'per_day'})">Быстрее набирают</button></div></div>
+      <div class="row"><div class="seg">${SORT_BY.map(([k, v]) =>
+        `<button class="${p.sort_by === k ? "on" : ""}" onclick="patch({sort_by:'${k}'})">${v}</button>`).join("")}</div></div>
       <div class="row"><div class="grow">Не старше, дней<div class="sub">0 — любые</div></div>
         <input class="num" type="number" min="0" value="${p.max_age_days}" onchange="patch({max_age_days:+this.value})"></div>
     </div>
-    <div class="hint">${p.sort_by === "per_day"
-      ? "«Быстрее набирают» = просмотры ÷ дни с выхода. Ролик месяц назад с 2M ≈ 67K/день, ролик 2 дня назад с 1M ≈ 500K/день — возьмётся второй."
-      : "Берётся ролик с наибольшим числом просмотров за всё время, который ещё не перезаливали."}</div>
+    <div class="hint">${{
+      trend: "<b>🔥 В тренде:</b> сначала ролики, которые набирают просмотры прямо сейчас (прирост за последние сутки), а когда они закончатся — остальные по числу просмотров. Бот замеряет просмотры каждые 2 часа: точный прирост появится через 3+ часа после запуска, до этого для свежих роликов берутся средние просмотры в день.",
+      views: "Ролик с наибольшим числом просмотров за всё время, который ещё не перезаливали.",
+      per_day: "Просмотры ÷ дни с выхода. Ролик месяц назад с 2M ≈ 67K/день, ролик 2 дня назад с 1M ≈ 500K/день — возьмётся второй.",
+    }[p.sort_by]}</div>
 
     <h2>Расписание</h2>
     <div class="card">
@@ -345,10 +347,11 @@ async function loadTop(refresh) {
   const d = await guarded(() => api("GET", `/api/projects/${pid()}/top${refresh ? "?refresh=1" : ""}`));
   if (!d) { box.innerHTML = ""; return; }
   window._topData = d;
-  topSort = topSort || (state.project.sort_by === "per_day" ? "per_day" : "views");
+  topSort = topSort || state.project.sort_by || "trend";
   renderTop();
 }
 const TOP_SORTS = {
+  trend: [ "🔥 Тренд", null ],
   views: [ "Просмотры", v => v.view_count || 0 ],
   per_day: [ "В день", v => v.views_per_day ?? -1 ],
   new: [ "Новые", v => v.published ? Date.parse(v.published) : 0 ],
@@ -363,13 +366,14 @@ function renderTop() {
     + d.sources.map(s => `
     <div class="row"><b class="grow">${esc(s.label)}</b></div>
     ${s.error ? `<div class="row sub">Ошибка: ${esc(s.error)}</div>` : ""}
-    ${[...s.videos].sort((a, b) => key(b) - key(a)).slice(0, 15).map(v => { window._top[v.id] = v; return `
+    ${(key ? [...s.videos].sort((a, b) => key(b) - key(a)) : s.videos).slice(0, 15).map(v => { window._top[v.id] = v; return `
       <div class="row tap vid" onclick="publishPrompt('${v.url}', '${v.id}')">
         <div class="grow" style="min-width:0"><div class="ellipsis">${esc(v.title)}</div>
           <div class="sub">${[
             v.published ? "📅 " + fmtDate(v.published) + " · " + fmtAgo(v.published) : "",
             v.duration ? "⏱ " + fmtDur(v.duration) : "",
-            v.views_per_day != null ? "≈" + fmtViews(v.views_per_day) + "/день" : "",
+            v.trend_per_day != null ? (v.hot ? "🔥 " : "") + "+" + fmtViews(v.trend_per_day) + " за сутки" : "",
+            v.views_per_day != null ? "≈" + fmtViews(v.views_per_day) + "/день в ср." : "",
           ].filter(Boolean).join(" · ")}</div></div>
         ${v.uploaded ? `<span class="badge ok">залито</span>` : ""}
         <span class="views">👁 ${fmtViews(v.view_count)}</span></div>`; }).join("")}`).join("")

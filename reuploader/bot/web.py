@@ -11,6 +11,8 @@ from urllib.parse import parse_qsl
 
 from aiohttp import web
 
+from ..pipeline import rank
+from . import trends
 from .db import from_iso, iso, needs_youtube, utcnow
 from .telegram import esc
 
@@ -231,7 +233,7 @@ class WebApp:
                 raise ApiError("Неизвестный способ публикации.")
             upd["delivery"] = body["delivery"]
         if "sort_by" in body:
-            if body["sort_by"] not in ("views", "per_day"):
+            if body["sort_by"] not in ("trend", "views", "per_day"):
                 raise ApiError("Неизвестная сортировка.")
             upd["sort_by"] = body["sort_by"]
         if "max_age_days" in body:
@@ -297,7 +299,9 @@ class WebApp:
 
         def fetch(url):
             videos = list_shorts(url, 100)
-            return enrich(videos, youtube, limit=30)
+            enrich(videos, youtube, limit=30)
+            trends.record(self.db, videos, url)
+            return videos
 
         result = []
         for s in self.db.sources(p["id"]):
@@ -310,9 +314,11 @@ class WebApp:
                     continue
                 cached = (time.time(), videos)
                 self.top_cache[s["url"]] = cached
+            videos = trends.apply(self.db, [dict(v) for v in cached[1]])
+            videos = rank(videos, sort_by="trend")   # проставляет "hot"
             result.append({
                 "label": channel_label(s["url"]),
-                "videos": [dict(v, uploaded=v["id"] in uploaded) for v in cached[1]],
+                "videos": [dict(v, uploaded=v["id"] in uploaded) for v in videos],
             })
         return web.json_response({"sources": result, "with_api": youtube is not None})
 

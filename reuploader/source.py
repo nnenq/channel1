@@ -89,6 +89,7 @@ def enrich(videos, youtube=None, limit=60):
                 views = it.get("statistics", {}).get("viewCount")
                 if views is not None:
                     v["view_count"] = int(views)
+                    v["exact"] = True
     else:
         with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
             for v in videos[:limit]:

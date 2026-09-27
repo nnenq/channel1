@@ -14,8 +14,39 @@ DEFAULT_TEXT = {
 
 SORTS = {
     "views": lambda v: v["view_count"] or 0,                  # больше всего просмотров всего
-    "per_day": lambda v: v.get("views_per_day") or -1,        # быстрее всего набирают
+    "per_day": lambda v: v.get("views_per_day") or -1,        # в среднем в день за всё время
 }
+
+TREND_MIN_PER_DAY = 300     # меньше этого прироста в сутки ролик "в тренде" не считается
+TREND_SHARE = 0.05          # ...и меньше 5% от самого быстрорастущего в выборке
+FRESH_DAYS = 7              # для молодых роликов без замеров берём средние просмотры в день
+
+
+def current_rate(v):
+    """Сколько просмотров в сутки ролик набирает сейчас.
+
+    trend_per_day — по замерам (прирост за последние ~сутки);
+    если замеров ещё нет, для свежих роликов — средние просмотры в день.
+    """
+    if v.get("trend_per_day") is not None:
+        return v["trend_per_day"]
+    if v.get("age_days") is not None and v["age_days"] <= FRESH_DAYS:
+        return v.get("views_per_day")
+    return None
+
+
+def _trend_sorted(videos):
+    """Сначала то, что растёт прямо сейчас (по приросту), потом остальное по просмотрам."""
+    rates = [r for r in (current_rate(v) for v in videos) if r]
+    threshold = max(TREND_MIN_PER_DAY, TREND_SHARE * max(rates)) if rates else float("inf")
+
+    def key(v):
+        r = current_rate(v) or 0
+        return (1, r) if r >= threshold else (0, v["view_count"] or 0)
+
+    for v in videos:
+        v["hot"] = (current_rate(v) or 0) >= threshold
+    return sorted(videos, key=key, reverse=True)
 
 
 def rank(videos, exclude_ids=(), sort_by="views", max_age_days=0, min_views=0):
@@ -31,26 +62,29 @@ def rank(videos, exclude_ids=(), sort_by="views", max_age_days=0, min_views=0):
         if max_age_days and (v.get("age_days") is None or v["age_days"] > max_age_days):
             continue
         out.append(v)
+    if sort_by == "trend":
+        return _trend_sorted(out)
     out.sort(key=SORTS.get(sort_by, SORTS["views"]), reverse=True)
     return out
 
 
 def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="top",
-         sort_by="views", max_age_days=0, enrich=None):
+         sort_by="views", max_age_days=0, enrich=None, trend=None):
     """Выбирает `count` лучших ещё не перезалитых шортсов.
 
     strategy="top"    — общий рейтинг по всем источникам;
     strategy="rotate" — источники по очереди (в порядке списка `sources`),
                         с каждого берётся его лучший.
-    sort_by="views" — по просмотрам всего, "per_day" — по просмотрам в день.
+    sort_by="trend" — сначала то, что набирает просмотры прямо сейчас, потом остальное
+    по просмотрам; "views" — по просмотрам всего; "per_day" — в среднем в день.
     enrich(videos) — добавляет даты/просмотры в день (см. source.enrich);
-    нужен для sort_by="per_day" и max_age_days.
+    trend(videos, source) — записывает замер просмотров и добавляет trend_per_day.
     Возвращает список словарей с ключами id, title, view_count, url, source, ...
     """
     from .source import enrich as ytdlp_enrich
     from .source import list_shorts
 
-    need_dates = sort_by == "per_day" or bool(max_age_days)
+    need_dates = sort_by in ("per_day", "trend") or bool(max_age_days)
 
     def load(src):
         videos = [dict(v, source=src) for v in list_shorts(src, scan_limit)]
@@ -58,6 +92,8 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
             enrich(videos)
         elif need_dates:
             ytdlp_enrich(videos)
+        if trend:
+            trend(videos, src)
         return videos
 
     ranked = {}

@@ -8,6 +8,7 @@ defaults:
   # OAuth-клиент из Google Cloud Console (тип "Desktop app")
   client_secret: client_secret.json
   per_run: 1              # сколько видео заливать за один запуск задачи
+  strategy: rotate        # rotate = каналы-источники по очереди; top = общий топ
   scan_limit: 200         # сколько последних шортсов канала просматривать
   min_views: 0            # не брать видео с просмотрами меньше этого
   privacy: public         # public | unlisted | private

@@ -8,6 +8,15 @@ import subprocess
 
 from .ffmpeg_path import ffmpeg_exe
 
+DEFAULT_EFFECTS = {
+    "zoom": 1.05,
+    "rotate_deg": -0.5,
+    "shadows": 0.10,
+    "edge_blur": {"height": 0.10, "sigma": 18},
+    "crf": 20,
+    "strip_metadata": True,
+}
+
 
 def _even(expr):
     return f"trunc(({expr})/2)*2"

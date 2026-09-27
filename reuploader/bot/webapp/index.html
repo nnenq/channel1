@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Перезалив Shorts</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-secondary-bg-color, #f0f2f5);
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #fff));
+    --text: var(--tg-theme-text-color, #111);
+    --hint: var(--tg-theme-hint-color, #8a8f98);
+    --link: var(--tg-theme-link-color, #2481cc);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #fff);
+    --danger: var(--tg-theme-destructive-text-color, #e5484d);
+    --sep: color-mix(in srgb, var(--hint) 22%, transparent);
+    --ok: #2fa84f;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 12px 12px 40px; }
+  h1 { font-size: 22px; margin: 6px 4px 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--hint);
+    font-weight: 600; margin: 18px 16px 6px; }
+  .card { background: var(--card); border-radius: 12px; padding: 4px 0; overflow: hidden; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 11px 16px; min-height: 44px; }
+  .row + .row { border-top: 1px solid var(--sep); }
+  .row .grow { flex: 1; min-width: 0; }
+  .sub { color: var(--hint); font-size: 13px; }
+  .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tap { cursor: pointer; }
+  .tap:active { background: var(--sep); }
+  .chev::after { content: "›"; color: var(--hint); font-size: 22px; line-height: 1; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.ghost { background: transparent; color: var(--link); padding: 6px 8px; font-weight: 500; }
+  button.danger { background: transparent; color: var(--danger); }
+  button.wide { width: 100%; }
+  button:disabled { opacity: .5; }
+  .x { background: transparent; color: var(--hint); font-size: 20px; padding: 0 6px; line-height: 1; }
+  input, select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--sep);
+    border-radius: 9px; padding: 9px 10px; min-width: 0; }
+  input.hhmm { width: 74px; text-align: center; font-variant-numeric: tabular-nums; }
+  input.num { width: 74px; text-align: center; }
+  .seg { display: flex; background: var(--bg); border-radius: 9px; padding: 2px; gap: 2px; flex: 1; }
+  .seg button { flex: 1; background: transparent; color: var(--text); font-weight: 500; padding: 7px 4px;
+    border-radius: 7px; font-size: 14px; }
+  .seg button.on { background: var(--card); box-shadow: 0 1px 3px rgba(0,0,0,.12); font-weight: 600; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--sep); color: var(--hint);
+    white-space: nowrap; }
+  .badge.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .badge.warn { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+  .switch { position: relative; width: 50px; height: 30px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; background: var(--sep); border-radius: 99px; transition: .2s; }
+  .switch span::before { content: ""; position: absolute; width: 26px; height: 26px; left: 2px; top: 2px;
+    background: #fff; border-radius: 50%; transition: .2s; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .switch input:checked + span { background: var(--ok); }
+  .switch input:checked + span::before { transform: translateX(20px); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 2px; background: var(--bg); border-radius: 99px;
+    padding: 4px 4px 4px 12px; }
+  .empty { text-align: center; color: var(--hint); padding: 28px 16px; }
+  .hint { color: var(--hint); font-size: 13px; padding: 6px 16px 0; }
+  .status { width: 22px; text-align: center; flex: none; }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: rgba(0,0,0,.82);
+    color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 9; max-width: 90vw; }
+  .spin { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--sep);
+    border-top-color: var(--accent); border-radius: 50%; animation: s 1s linear infinite; vertical-align: -3px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  .vid .views { font-variant-numeric: tabular-nums; color: var(--hint); font-size: 13px; white-space: nowrap; }
+  a { color: var(--link); text-decoration: none; }
+</style>
+</head>
+<body>
+<main id="root"><div class="empty"><span class="spin"></span></div></main>
+<script>
+const tg = window.Telegram?.WebApp;
+tg?.ready(); tg?.expand();
+const $root = document.getElementById("root");
+const STATUS = { planned: "🕒", running: "⏳", done: "✅", failed: "❌", skipped: "⏭" };
+const PRIVACY = [["public", "Публичное"], ["unlisted", "По ссылке"], ["private", "Приватное"]];
+let state = {};
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtViews = n => n == null ? "" : n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + "M"
+  : n >= 1e3 ? (n / 1e3).toFixed(1).replace(".0", "") + "K" : String(n);
+const HHMM = 'class="hhmm" inputmode="numeric" maxlength="5" placeholder="ЧЧ:ММ"';
+// "9" -> "09:00", "930" -> "09:30", "19.5" -> "19:05"
+const fixTime = v => {
+  v = String(v).trim();
+  const m = v.match(/^(\d{1,2})(\d{2})$/) || v.match(/^(\d{1,2})(?:[:.\s-](\d{1,2}))?$/);
+  if (!m) return v;
+  return String(+m[1]).padStart(2, "0") + ":" + String(+(m[2] || 0)).padStart(2, "0");
+};
+const haptic = t => tg?.HapticFeedback?.notificationOccurred?.(t);
+
+function toast(msg) {
+  const el = document.createElement("div"); el.className = "toast"; el.textContent = msg;
+  document.body.appendChild(el); setTimeout(() => el.remove(), 2600);
+}
+function alertMsg(msg) { tg?.showAlert ? tg.showAlert(msg) : alert(msg); }
+function confirmMsg(msg) {
+  return new Promise(r => tg?.showConfirm ? tg.showConfirm(msg, r) : r(confirm(msg)));
+}
+function openLink(url) { tg?.openLink ? tg.openLink(url) : window.open(url, "_blank"); }
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method, headers: { "Content-Type": "application/json", "X-Init-Data": tg?.initData || "" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { haptic("error"); throw new Error(data.error || "Ошибка " + res.status); }
+  return data;
+}
+async function guarded(fn) {
+  try { return await fn(); } catch (e) { alertMsg(e.message); }
+}
+
+// ---------- роутинг ----------
+function route() {
+  const m = location.hash.match(/^#p(\d+)/);
+  if (m) { tg?.BackButton.show(); showProject(+m[1]); }
+  else { tg?.BackButton.hide(); showHome(); }
+}
+tg?.BackButton.onClick(() => { location.hash = ""; });
+window.addEventListener("hashchange", route);
+
+// ---------- главная ----------
+async function showHome() {
+  const data = await guarded(() => api("GET", "/api/projects"));
+  if (!data) { $root.innerHTML = `<div class="empty">Открой панель из Telegram-бота.</div>`; return; }
+  const cards = data.projects.map(p => {
+    let badge = !p.linked ? `<span class="badge warn">нет канала</span>`
+      : !p.enabled ? `<span class="badge">пауза</span>`
+      : p.exhausted ? `<span class="badge warn">видео кончились</span>`
+      : `<span class="badge ok">${p.today_done}/${p.today_total} сегодня</span>`;
+    return `<div class="row tap chev" onclick="location.hash='#p${p.id}'">
+      <div class="grow"><div class="ellipsis"><b>${esc(p.name)}</b></div>
+        <div class="sub ellipsis">${p.sources} ист. → ${esc(p.channel_title || "канал не привязан")}
+        ${p.next ? " · следующий в " + p.next : ""}</div></div>${badge}</div>`;
+  }).join("");
+  $root.innerHTML = `
+    <h1>Перезалив Shorts</h1>
+    <div class="card">${cards || `<div class="empty">Пока нет проектов.<br>Проект = твои каналы-источники → 1 канал для перезалива.</div>`}</div>
+    <h2>Новый проект</h2>
+    <div class="card"><div class="row">
+      <input id="newName" class="grow" placeholder="Название, напр. HappyFlick 2">
+      <button onclick="createProject()">Создать</button></div></div>
+    <div class="hint">Время: ${esc(data.tz)}, сейчас ${data.now}</div>`;
+}
+async function createProject() {
+  const name = document.getElementById("newName").value;
+  const r = await guarded(() => api("POST", "/api/projects", { name }));
+  if (r) { haptic("success"); location.hash = "#p" + r.id; }
+}
+
+// ---------- проект ----------
+async function showProject(id, data) {
+  data = data || await guarded(() => api("GET", `/api/projects/${id}`));
+  if (!data) return;
+  state = data;
+  const p = data.project;
+  const e = p.effects;
+  $root.innerHTML = `
+    <div class="card"><div class="row">
+      <input class="grow" id="name" value="${esc(p.name)}" onchange="patch({name:this.value})" style="font-weight:600;font-size:17px">
+      <label class="switch" title="Включён"><input type="checkbox" ${p.enabled ? "checked" : ""}
+        onchange="patch({enabled:this.checked})"><span></span></label></div>
+      <div class="hint" style="padding-bottom:10px">${p.enabled ? "Работает по расписанию" : "На паузе — автоматически не заливает"}
+        · всего перезалито: ${data.total_uploaded}</div></div>
+
+    <h2>Куда заливать</h2>
+    <div class="card">
+      ${p.linked ? `<div class="row"><div class="grow"><b>${esc(p.channel_title)}</b>
+          <div class="sub"><a href="#" onclick="openLink('https://youtube.com/channel/${esc(p.channel_id)}');return false">открыть канал</a></div></div>
+          <button class="ghost" onclick="linkChannel()">Сменить</button></div>`
+        : `<div class="row"><div class="grow">Канал не привязан</div><button onclick="linkChannel()">Привязать канал</button></div>`}
+    </div>
+    <div class="hint">Вход в Google открывается в браузере — делай это <b>на компьютере, где запущен бот</b> (в Telegram Desktop). Выбери именно канал для перезалива.</div>
+
+    <h2>Откуда брать — твои каналы</h2>
+    <div class="card">
+      ${data.sources.map(s => `<div class="row"><div class="grow ellipsis">
+          <a href="#" onclick="openLink('${esc(s.url)}/shorts');return false">${esc(s.label)}</a></div>
+          <button class="x" onclick="delSource(${s.id})">×</button></div>`).join("")}
+      <div class="row"><input id="srcUrl" class="grow" placeholder="https://www.youtube.com/@канал">
+        <button onclick="addSource()">Добавить</button></div>
+      <div class="row"><div class="seg">
+        <button class="${p.strategy === "rotate" ? "on" : ""}" onclick="patch({strategy:'rotate'})">Каналы по очереди</button>
+        <button class="${p.strategy === "top" ? "on" : ""}" onclick="patch({strategy:'top'})">Общий топ</button></div></div>
+    </div>
+    <div class="hint">Берётся самое просматриваемое видео, которое ещё не перезаливали. Можно вставить несколько ссылок через пробел.</div>
+
+    <h2>Расписание</h2>
+    <div class="card">
+      <div class="row"><div class="seg">
+        <button class="${p.schedule_mode === "auto" ? "on" : ""}" onclick="patch({schedule_mode:'auto'})">Авто (случайно)</button>
+        <button class="${p.schedule_mode === "fixed" ? "on" : ""}" onclick="patch({schedule_mode:'fixed'})">Своё время</button></div></div>
+      ${p.schedule_mode === "auto" ? `
+        <div class="row"><div class="grow">Роликов в день</div>
+          <input class="num" type="number" min="1" max="20" value="${p.per_day}" onchange="patch({per_day:+this.value})"></div>
+        <div class="row"><div class="grow">Окно публикаций</div>
+          <input ${HHMM} value="${p.window_start}" onchange="patch({window_start:fixTime(this.value)})">–<input ${HHMM} value="${p.window_end}" onchange="patch({window_end:fixTime(this.value)})"></div>
+        <div class="row"><div class="grow">Между роликами, мин</div>
+          <input class="num" type="number" min="1" value="${p.min_gap}" onchange="patch({min_gap:+this.value})">–<input class="num" type="number" min="1" value="${p.max_gap}" onchange="patch({max_gap:+this.value})"></div>
+      ` : `
+        <div class="row"><div class="chips grow">${p.fixed_times.map(t => `<span class="chip">${t}<button class="x" onclick="delTime('${t}')">×</button></span>`).join("") || `<span class="sub">Добавь время публикаций</span>`}</div></div>
+        <div class="row"><div class="grow">Добавить время</div><input ${HHMM} id="newTime" value="15:00"><button onclick="addTime()">+</button></div>
+      `}
+      <div class="row"><div class="seg">${PRIVACY.map(([k, v]) =>
+        `<button class="${p.privacy === k ? "on" : ""}" onclick="patch({privacy:'${k}'})">${v}</button>`).join("")}</div></div>
+    </div>
+    <div class="hint">Часовой пояс: ${esc(data.tz)}. ${p.schedule_mode === "auto"
+      ? "Каждый день время случайное внутри окна, с промежутком между роликами." : "Каждый день в эти часы."}</div>
+
+    <h2>План</h2>
+    <div class="card">
+      ${data.slots.map(s => `<div class="row"><span class="status">${STATUS[s.status] || ""}</span>
+        <div class="grow"><div class="ellipsis">${s.date === data.today ? "" : s.date.slice(8) + "." + s.date.slice(5, 7) + " "}<b>${s.time}</b>
+          ${s.title ? "— " + esc(s.title) : `<span class="sub">— ${s.video_url ? "выбранное видео" : "авто-выбор"}</span>`}</div>
+          ${s.info && s.status !== "planned" ? `<div class="sub ellipsis">${s.status === "done" ? `<a href="#" onclick="openLink('${esc(s.info)}');return false">${esc(s.info)}</a>` : esc(s.info)}</div>` : ""}
+          ${s.retry ? `<div class="sub">повторная попытка</div>` : ""}</div>
+        ${s.status === "planned" ? `<button class="x" onclick="cancelSlot(${s.id})">×</button>` : ""}</div>`).join("")
+        || `<div class="empty">${p.linked ? (p.enabled ? "На сегодня публикаций нет" : "Проект на паузе") : "Привяжи канал — и расписание появится"}</div>`}
+      ${p.linked && p.enabled ? `<div class="row"><button class="ghost" onclick="replan()">🎲 Перераспределить время на сегодня</button></div>` : ""}
+    </div>
+
+    <h2>Выбрать видео вручную</h2>
+    <div class="card">
+      <div class="row"><input id="vidUrl" class="grow" placeholder="Ссылка на шортс"><button onclick="publishPrompt(document.getElementById('vidUrl').value)">Залить…</button></div>
+      <div id="top"><div class="row"><button class="ghost" onclick="loadTop()">🔥 Показать топ видео с каналов</button></div></div>
+    </div>
+    <div id="schedBox"></div>
+
+    <h2>Уникализация</h2>
+    <div class="card">
+      <div class="row"><div class="grow">Увеличение, %</div><input class="num" id="fx_zoom" type="number" step="1" value="${Math.round((e.zoom - 1) * 100)}"></div>
+      <div class="row"><div class="grow">Поворот, °</div><input class="num" id="fx_rot" type="number" step="0.1" value="${e.rotate_deg}"></div>
+      <div class="row"><div class="grow">Осветлить тени, %</div><input class="num" id="fx_sh" type="number" step="1" value="${Math.round(e.shadows * 100)}"></div>
+      <div class="row"><div class="grow">Размытие сверху/снизу, % высоты</div><input class="num" id="fx_bh" type="number" step="1" value="${Math.round(e.edge_blur.height * 100)}"></div>
+      <div class="row"><div class="grow">Сила размытия</div><input class="num" id="fx_bs" type="number" step="1" value="${e.edge_blur.sigma}"></div>
+      <div class="row"><button class="wide" onclick="saveEffects()">Сохранить эффекты</button></div>
+    </div>
+
+    <h2>История</h2>
+    <div class="card">
+      ${data.uploads.map(u => `<div class="row tap" onclick="openLink('${esc(u.url)}')"><div class="grow">
+        <div class="ellipsis">${esc(u.title)}</div><div class="sub">${u.at}${u.views ? " · ориг. " + fmtViews(u.views) + " просм." : ""}</div></div>
+        <span class="sub">↗</span></div>`).join("") || `<div class="empty">Пока ничего не залито</div>`}
+    </div>
+
+    <div style="margin-top:24px"><button class="danger wide" onclick="delProject()">Удалить проект</button></div>`;
+}
+
+const pid = () => state.project.id;
+async function reload(data) { await showProject(pid(), data); }
+async function patch(body) {
+  const d = await guarded(() => api("PATCH", `/api/projects/${pid()}`, body));
+  if (d) { haptic("success"); reload(d); } else reload();
+}
+async function addSource() {
+  const url = document.getElementById("srcUrl").value.trim();
+  if (!url) return;
+  const d = await guarded(() => api("POST", `/api/projects/${pid()}/sources`, { url }));
+  if (d) { haptic("success"); reload(d); }
+}
+async function delSource(sid) {
+  if (!await confirmMsg("Убрать канал из источников?")) return;
+  const d = await guarded(() => api("DELETE", `/api/projects/${pid()}/sources/${sid}`));
+  if (d) reload(d);
+}
+function addTime() {
+  const t = fixTime(document.getElementById("newTime").value);
+  if (t) patch({ fixed_times: [...state.project.fixed_times, t] });
+}
+function delTime(t) { patch({ fixed_times: state.project.fixed_times.filter(x => x !== t) }); }
+async function replan() {
+  const d = await guarded(() => api("POST", `/api/projects/${pid()}/replan`));
+  if (d) { haptic("success"); toast("Время перераспределено"); reload(d); }
+}
+async function cancelSlot(sid) {
+  const d = await guarded(() => api("DELETE", `/api/projects/${pid()}/slots/${sid}`));
+  if (d) reload(d);
+}
+async function linkChannel() {
+  const d = await guarded(() => api("POST", `/api/projects/${pid()}/auth`));
+  if (d) { openLink(d.url); toast("После входа вернись сюда и потяни вниз для обновления"); }
+}
+async function saveEffects() {
+  const v = id => +document.getElementById(id).value;
+  await patch({ effects: { zoom: 1 + v("fx_zoom") / 100, rotate_deg: v("fx_rot"), shadows: v("fx_sh") / 100,
+    edge_blur: { height: v("fx_bh") / 100, sigma: v("fx_bs") } } });
+}
+async function delProject() {
+  if (!await confirmMsg(`Удалить проект «${state.project.name}»? История заливок тоже удалится.`)) return;
+  if (await guarded(() => api("DELETE", `/api/projects/${pid()}`))) location.hash = "";
+}
+
+async function loadTop(refresh) {
+  const box = document.getElementById("top");
+  box.innerHTML = `<div class="row"><span class="spin"></span><span class="sub">Смотрю каналы… (до минуты)</span></div>`;
+  const d = await guarded(() => api("GET", `/api/projects/${pid()}/top${refresh ? "?refresh=1" : ""}`));
+  if (!d) { box.innerHTML = ""; return; }
+  window._top = {};
+  box.innerHTML = d.sources.map(s => `
+    <div class="row"><b class="grow">${esc(s.label)}</b></div>
+    ${s.error ? `<div class="row sub">Ошибка: ${esc(s.error)}</div>` : ""}
+    ${s.videos.map(v => { window._top[v.id] = v; return `
+      <div class="row tap vid" onclick="publishPrompt('${v.url}', '${v.id}')">
+        <div class="grow ellipsis">${esc(v.title)}</div>
+        ${v.uploaded ? `<span class="badge ok">залито</span>` : ""}
+        <span class="views">${fmtViews(v.view_count)}</span></div>`; }).join("")}`).join("")
+    + `<div class="row"><button class="ghost" onclick="loadTop(true)">↻ Обновить</button></div>`;
+}
+
+function publishPrompt(url, vid) {
+  if (!url) return alertMsg("Вставь ссылку на видео.");
+  const title = vid && window._top?.[vid]?.title || "";
+  const run = when => guarded(async () => {
+    const r = await api("POST", `/api/projects/${pid()}/publish`, { video_url: url, title, when });
+    haptic("success");
+    toast(when === "now" ? "Заливаю сейчас — пришлю ссылку в чат" : "Запланировано на " + r.at);
+    reload();
+  });
+  const choose = id => {
+    if (id === "now") run("now");
+    else if (id === "next") run("next");
+    else if (id === "at") askTime(run);
+  };
+  if (tg?.showPopup) {
+    tg.showPopup({ title: "Залить видео", message: title || url, buttons: [
+      { id: "now", type: "default", text: "Сейчас" },
+      { id: "next", type: "default", text: "В ближайший слот" },
+      { id: "at", type: "default", text: "На время…" }] }, id => id && choose(id));
+  } else {
+    const a = prompt("now / next / at", "now"); if (a) choose(a);
+  }
+}
+function askTime(run) {
+  const box = document.getElementById("schedBox");
+  box.innerHTML = `<h2>Когда опубликовать</h2><div class="card"><div class="row">
+    <input type="datetime-local" id="whenAt" class="grow" value="${state.now}" min="${state.now}">
+    <button id="whenOk">OK</button></div></div>`;
+  box.scrollIntoView({ behavior: "smooth" });
+  document.getElementById("whenOk").onclick = () => {
+    const v = document.getElementById("whenAt").value;
+    if (v) { box.innerHTML = ""; run(v); }
+  };
+}
+
+route();
+</script>
+</body>
+</html>

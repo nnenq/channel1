@@ -12,35 +12,18 @@ def _fmt_views(n):
     return "?" if n is None else f"{n:,}".replace(",", " ")
 
 
-def _pick(job, history, source_override=None):
-    """Самые просматриваемые ещё не перезалитые шортсы со всех источников задачи."""
-    from .source import list_shorts
-
-    sources = [source_override] if source_override else job["sources"]
-    pool = []
-    for src in sources:
-        print(f"  сканирую {src}")
-        pool += list_shorts(src, job["scan_limit"])
-    pool.sort(key=lambda v: v["view_count"] or 0, reverse=True)
-    fresh = [
-        v for v in pool
-        if v["id"] not in history and (v["view_count"] or 0) >= job["min_views"]
-    ]
-    return fresh[: job["per_run"]]
-
-
-def _render_text(template, meta):
-    return template.format(title=meta["title"], description=meta["description"]).strip()
-
-
 def run_job(job, dry_run=False, source_override=None, keep_files=False):
-    from .effects import apply_effects
-    from .source import download
+    from .pipeline import build_text, pick, prepare
     from .uploader import channel_title, upload, youtube_client
 
     print(f"== Задача {job['name']} ==")
     history = History(job["name"])
-    picked = _pick(job, history, source_override)
+    sources = [source_override] if source_override else job["sources"]
+    print("  источники: " + ", ".join(sources))
+    picked = pick(
+        sources, history, count=job["per_run"], scan_limit=job["scan_limit"],
+        min_views=job["min_views"], strategy=job.get("strategy", "top"),
+    )
     if not picked:
         print("  нечего заливать — всё топовое уже перезалито")
         return
@@ -53,14 +36,9 @@ def run_job(job, dry_run=False, source_override=None, keep_files=False):
     work = WORK_DIR / job["name"]
     for v in picked:
         print(f"  -> {v['title']!r} ({_fmt_views(v['view_count'])} просмотров) {v['url']}")
-        src, meta = download(v["url"], work)
-        out = work / f"{meta['id']}.out.mp4"
-        print("    уникализация...")
-        apply_effects(src, out, job["effects"])
-
-        title = _render_text(job["title_template"], meta) or meta["title"]
-        description = _render_text(job["description_template"], meta)
-        tags = (meta["tags"] if job["keep_tags"] else []) + list(job["extra_tags"])
+        print("    скачивание и уникализация...")
+        src, out, meta = prepare(v["url"], work, job["effects"])
+        title, description, tags = build_text(meta, job)
 
         if dry_run:
             print(f"    [dry-run] готово: {out}")

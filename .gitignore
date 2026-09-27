@@ -8,3 +8,6 @@ tokens/
 work/
 state/
 config.yaml
+bin/
+data/
+.env

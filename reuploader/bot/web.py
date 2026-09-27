@@ -302,6 +302,17 @@ class WebApp:
         urls = [u for u in re.split(r"[\s,]+", body.get("url", "")) if u]
         if not urls:
             raise ApiError("Вставь ссылку на канал.")
+        # ссылка на TikTok-видео: берём из него ID аккаунта (когда TikTok прячет его на странице профиля)
+        from ..source import tiktok_id_from_video
+
+        for k, u in enumerate(urls):
+            if TIKTOK_VIDEO_RE.search(u):
+                try:
+                    handle, _ = await asyncio.get_running_loop().run_in_executor(None, tiktok_id_from_video, u)
+                except Exception as e:  # noqa: BLE001
+                    raise ApiError(f"Не смог прочитать TikTok-видео: {str(e).splitlines()[0][:200]}") from None
+                urls[k] = f"https://www.tiktok.com/@{handle}"
+                self.top_cache.pop(urls[k], None)
         bad = [u for u in urls if not normalize_channel(u)]
         if bad:
             raise ApiError(f"Это не ссылка на YouTube-канал или TikTok-аккаунт: {bad[0]}")

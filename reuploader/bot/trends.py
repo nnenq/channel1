@@ -3,10 +3,12 @@
 Прирост считается за последние ~сутки: берём замер ~24 ч назад (или самый
 ранний за последние 2 суток, но не моложе 3 ч) и пересчитываем на сутки.
 """
+import logging
 from datetime import timedelta
 
 from .db import from_iso, iso, utcnow
 
+log = logging.getLogger("trends")
 SNAPSHOT_EVERY = timedelta(hours=2)     # как часто замерять каналы
 MIN_SNAPSHOT_GAP = timedelta(minutes=50)
 KEEP = timedelta(days=7)
@@ -56,7 +58,11 @@ def snapshot_all(db, list_shorts, enrich, youtube_client):
         last = db.last_snapshot_at(row["url"])
         if last and now - last < SNAPSHOT_EVERY:
             continue
-        videos = list_shorts(row["url"], 200)
+        try:
+            videos = list_shorts(row["url"], 200)
+        except Exception as e:  # noqa: BLE001 — один сломанный канал не должен ломать замер остальных
+            log.warning("замер %s: %s", row["url"], str(e).splitlines()[0][:200])
+            continue
         if row["token_path"]:
             try:
                 enrich(videos, youtube_client(row["token_path"]))   # точные просмотры через API

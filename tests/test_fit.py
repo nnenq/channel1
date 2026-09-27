@@ -63,7 +63,7 @@ def test_fit_target_modes(tmp_path, monkeypatch):
     db.add_source(pid, "https://www.youtube.com/@src")
     assert worker.fit_target_for(db, db.project(pid)) is None                     # по умолчанию выкл
     db.update_project(pid, fit_mode="fixed", fit_seconds=45)
-    assert worker.fit_target_for(db, db.project(pid)) == 45
+    assert worker.fit_target_for(db, db.project(pid)) == (45, 0.05)
     calls = []
 
     def list_shorts(url, n):
@@ -74,8 +74,8 @@ def test_fit_target_modes(tmp_path, monkeypatch):
                 [(58, 900), (40, 800), (35, 700), (70, 10), (20, 5), (15, 4), (30, 3), (25, 2), (22, 1), (12, 1)]]
     monkeypatch.setattr(source, "list_shorts", list_shorts)
     db.update_project(pid, fit_mode="channel", channel_id="UCxxx")
-    assert worker.fit_target_for(db, db.project(pid)) == 40                       # медиана 58, 40, 35
-    assert worker.fit_target_for(db, db.project(pid)) == 40 and len(calls) == 2   # второй раз — из кэша
+    assert worker.fit_target_for(db, db.project(pid)) == (40, 0.05)               # медиана 58, 40, 35
+    assert worker.fit_target_for(db, db.project(pid))[0] == 40 and len(calls) == 2   # второй раз — из кэша
 
 
 def test_auto_publish_button_creates_auto_pick_slot(tmp_path, monkeypatch):
@@ -109,3 +109,34 @@ def test_auto_publish_button_creates_auto_pick_slot(tmp_path, monkeypatch):
     assert s2 == 200 and pokes
     slot = db.q("SELECT * FROM slots WHERE project_id = ?", pid)[0]
     assert slot["kind"] == "manual" and slot["video_url"] is None
+
+
+def test_parse_range_and_fit_params():
+    from reuploader.smartcut.target import fit_params, parse_duration, parse_range
+    assert parse_duration("1.35") == 95 and parse_duration("1:35") == 95 and parse_duration("12.5") == 12.5
+    assert parse_range("1.35-2.35") == (95, 155) == parse_range("от 1:35 до 2:35") == parse_range("2:35 – 1:35")
+    assert parse_range("0:45") == (45, 45)
+    t, tol = fit_params(95, 155)
+    assert round(t * (1 - tol)) == 95 and round(t * (1 + tol)) == 155
+
+
+def test_range_fit_lands_inside_and_leaves_short_alone(clip, tmp_path, monkeypatch):
+    from reuploader.smartcut.target import fit_params
+    src, words = clip
+    monkeypatch.setattr(source, "download", fake_download(src))
+    t, tol = fit_params(25, 40)
+    _, out, meta = pipeline.prepare("u", tmp_path / "a", FX, t, lambda p: list(words), tol)
+    assert meta["fit"]["status"].startswith("ok") and 25 - 0.2 <= probe(out).duration <= 40 + 0.2
+    t, tol = fit_params(50, 70)                     # 59 с уже внутри диапазона — не режем
+    _, out, meta = pipeline.prepare("u", tmp_path / "b", FX, t, lambda p: list(words), tol)
+    assert meta["fit"]["status"] == "already_short" and probe(out).duration > 55
+
+
+def test_worker_range_mode(tmp_path):
+    from reuploader.bot import worker
+    from reuploader.bot.db import DB
+    db = DB(tmp_path / "b.db")
+    pid = db.create_project("p", 1)
+    db.update_project(pid, fit_mode="range", fit_min=95, fit_max=155)
+    t, tol = worker.fit_target_for(db, db.project(pid))
+    assert round(t * (1 - tol)) == 95 and round(t * (1 + tol)) == 155

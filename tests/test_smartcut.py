@@ -118,3 +118,22 @@ def test_target_from_videos_and_parsing():
     target, n = target_from_videos(vids)          # топ-30% из 10 = 3 ролика: 58, 45, 30
     assert n == 3 and target == 45.0
     assert target_from_videos([]) == (None, 0)
+
+
+def test_careful_keeps_meaning_over_exact_length(clip, tmp_path):
+    """Цель слишком короткая: бот не режет больше 60% и оставляет ключевые моменты."""
+    src, total, pauses, words, _ = clip
+    dst = tmp_path / "out.mp4"
+    r = smart_cut(src, dst, 12, transcriber=fake_transcriber(words))
+    out = probe(dst).duration
+    assert out >= total * 0.4 - 1.0, out                      # не вырезал больше 60%
+    assert any("60%" in w or "смысл" in w for w in r["warnings"])
+    kept_text = " ".join(w.text for w in words if not any(x["start"] <= w.start < x["end"] for x in r["removed"]))
+    assert "вдруг" in kept_text and "итоге" in kept_text      # поворот и развязка на месте
+
+
+def test_not_careful_cuts_to_target(clip, tmp_path):
+    src, total, pauses, words, _ = clip
+    dst = tmp_path / "out.mp4"
+    r = smart_cut(src, dst, 20, transcriber=fake_transcriber(words), careful=False)
+    assert probe(dst).duration <= 21 + 0.2 and not r.get("longer_than_target")

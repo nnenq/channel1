@@ -170,7 +170,8 @@ class CutWorker:
         tick = asyncio.create_task(ticker())
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
-                smart_cut, job["src_path"], out, job["target"], progress=progress,
+                smart_cut, job["src_path"], out, job["target"], tolerance=job["tolerance"] or 0.05,
+                progress=progress,
                 transcriber=self.transcriber(jid), scorer=scorer,
                 work_dir=job_dir(self.s, jid) / "tmp"))
         except CutError as e:

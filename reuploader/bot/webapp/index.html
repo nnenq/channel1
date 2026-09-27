@@ -309,15 +309,19 @@ async function showProject(id, data) {
 
     <h2>Подгонять длину при заливке</h2>
     <div class="card">
-      <div class="row"><div class="seg">${[["off", "Как есть"], ["fixed", "Своя длина"], ["channel", "Как на канале"]].map(([k, v]) =>
+      <div class="row"><div class="seg">${[["off", "Как есть"], ["fixed", "Точно"], ["range", "Диапазон"], ["channel", "Как на канале"]].map(([k, v]) =>
         `<button class="${p.fit_mode === k ? "on" : ""}" onclick="patch({fit_mode:'${k}'})">${v}</button>`).join("")}</div></div>
       ${p.fit_mode === "fixed" ? `<div class="row"><div class="grow">Целевая длина</div>
         <input class="num" style="width:90px" placeholder="0:45" value="${p.fit_seconds ? fmtDur(p.fit_seconds) : ""}" onchange="patch({fit_seconds:this.value})"></div>` : ""}
+      ${p.fit_mode === "range" ? `<div class="row"><div class="grow">Длина от – до</div>
+        <input class="num" style="width:120px" placeholder="1:35-2:35"
+          value="${p.fit_max ? fmtDur(p.fit_min) + "-" + fmtDur(p.fit_max) : ""}" onchange="patch({fit_range:this.value})"></div>` : ""}
       ${p.fit_mode === "channel" ? `<div class="row sub">${p.fit_cached ? "Сейчас цель ≈ " + fmtDur(p.fit_cached) + " (обновляется раз в сутки)" : "Цель посчитаю при следующей заливке"}</div>` : ""}
     </div>
     <div class="hint">${{
       off: "Ролики заливаются целиком.",
-      fixed: "Длинные ролики бот укорачивает «умной обрезкой»: режет в паузах, сохраняет начало и финал. Короче цели — не трогает.",
+      fixed: "Длинные ролики бот укорачивает «умной обрезкой» до этой длины (±5%): режет в паузах, сохраняет начало и финал. Короче — не трогает.",
+      range: "«Плавающая» длина: ролик длиннее «до» бот укорачивает так, чтобы вышло где-то в диапазоне — где удобнее резать и что ценнее оставить. Ролики в диапазоне и короче не трогает. Можно писать 1:35-2:35 или 1.35-2.35.",
       channel: "Цель — медиана длины лучших 30% роликов твоего канала для перезалива (пока на нём мало роликов — каналов-источников).",
     }[p.fit_mode || "off"]}</div>
 
@@ -650,7 +654,7 @@ function cutMode(m) {
   cutModeCur = m;
   ["manual", "channel", "list"].forEach(k => document.getElementById("tm_" + k)?.classList.toggle("on", k === m));
   document.getElementById("tmBox").innerHTML = {
-    manual: `<div class="row"><div class="grow">Целевая длина</div><input id="tmSec" class="num" placeholder="0:58" style="width:90px"></div>`,
+    manual: `<div class="row"><div class="grow">Длина<div class="sub">точно или диапазон</div></div><input id="tmSec" class="num" placeholder="0:58 / 1:35-2:35" style="width:140px"></div>`,
     channel: `<div class="row"><input id="tmUrl" class="grow" placeholder="https://www.youtube.com/@канал"></div>
       <div class="hint" style="padding-bottom:8px">Возьму медиану длины лучших 30% роликов канала по просмотрам.</div>`,
     list: `<div class="row"><textarea id="tmList" class="grow" rows="5" placeholder="0:45 1.2M&#10;0:30 800k&#10;1:05 50k"

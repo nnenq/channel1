@@ -207,7 +207,7 @@ class WebApp:
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
                 "sort_by", "max_age_days", "min_duration", "max_duration", "delivery",
-                "fit_mode", "fit_seconds", "fit_cached",
+                "fit_mode", "fit_seconds", "fit_cached", "fit_min", "fit_max",
                 "channel_title", "channel_id")} | {
                                                    "linked": bool(p["token_path"]),
                                                    "ready": bool(p["token_path"]) or not needs_youtube(p),
@@ -273,7 +273,7 @@ class WebApp:
                 raise ApiError("Неизвестная сортировка.")
             upd["sort_by"] = body["sort_by"]
         if "fit_mode" in body:
-            if body["fit_mode"] not in ("off", "fixed", "channel"):
+            if body["fit_mode"] not in ("off", "fixed", "channel", "range"):
                 raise ApiError("Неизвестный режим подгонки длины.")
             upd["fit_mode"] = body["fit_mode"]
         if "fit_seconds" in body:
@@ -286,6 +286,16 @@ class WebApp:
             if sec and not 5 <= sec <= 600:
                 raise ApiError("Длина — от 5 секунд до 10 минут.")
             upd["fit_seconds"] = sec
+        if "fit_range" in body:
+            from ..smartcut.target import parse_range
+
+            try:
+                lo, hi = parse_range(str(body["fit_range"] or ""))
+            except ValueError as e:
+                raise ApiError(str(e)) from None
+            if not 5 <= lo <= hi <= 3600:
+                raise ApiError("Диапазон — от 5 секунд до 60 минут, «от» не больше «до».")
+            upd.update(fit_min=lo, fit_max=hi)
         if "min_duration" in body or "max_duration" in body:
             mn = _int(body.get("min_duration", p["min_duration"]) or 0, 0, 36000, "Длина от, сек")
             mx = _int(body.get("max_duration", p["max_duration"]) or 0, 0, 36000, "Длина до, сек")

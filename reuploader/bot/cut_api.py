@@ -8,7 +8,7 @@ from aiohttp import web
 
 from ..smartcut.core import format_report
 from ..smartcut.media import probe
-from ..smartcut.target import parse_duration, parse_list, target_from_channel, target_from_videos
+from ..smartcut.target import fit_params, parse_list, parse_range, target_from_channel, target_from_videos
 from .cutjobs import job_dir
 
 CHUNK = 8 * 1024 * 1024
@@ -130,12 +130,17 @@ class CutApi:
                            else "Исходник уже удалён — загрузи видео заново.")
         body = await request.json()
         mode = body.get("mode")
+        tolerance = 0.05
         if mode == "manual":
             try:
-                target = parse_duration(str(body.get("seconds", "")))
+                lo, hi = parse_range(str(body.get("seconds", "")))
             except ValueError as e:
                 raise ApiError(str(e)) from None
-            info = "вручную"
+            if hi > lo:     # «плавающая» длина: итог где-то между lo и hi
+                target, tolerance = fit_params(lo, hi)
+                info = f"диапазон {int(lo // 60)}:{int(lo % 60):02d}–{int(hi // 60)}:{int(hi % 60):02d}"
+            else:
+                target, info = lo, "вручную"
         elif mode == "channel":
             url = str(body.get("url", "")).strip()
             if not url:
@@ -161,7 +166,7 @@ class CutApi:
             raise ApiError("Странная целевая длина.")
         ai = bool(body.get("ai")) and self.w.bot.cut.ai_allowed(request["user"]["id"])
         self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=target,
-                               target_info=info, error=None, report=None,
+                               target_info=info, error=None, report=None, tolerance=tolerance,
                                mode="ai" if ai else "free", ai_state=None, estimate=None)
         self.w.bot.cut.poke()
         return web.json_response(self._json(self.db.cut_job(job["id"])))

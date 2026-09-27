@@ -16,6 +16,12 @@ log = logging.getLogger("smartcut")
 MAX_FIX_ROUNDS = 2
 MAX_COHERENCE_ROUNDS = 4
 
+# Бережный режим: целостность ролика важнее точной длины
+CAREFUL_KEEP_SHARE = 0.40     # никогда не вырезаем больше 60% ролика
+KEY_TAGS = {"хук", "поворот", "шутка", "эмоция", "развязка"}
+PROTECT_SCORE = 8.5           # такие куски не режем никогда
+KEY_SCORE = 7.0               # ключевой тег + оценка не ниже этой — тоже не режем
+
 
 class CutError(Exception):
     pass
@@ -43,11 +49,14 @@ def _quietest(analysis, gap, around):
 
 
 def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=None,
-              progress=None, work_dir=None, hook=(3.0, 5.0)):
+              progress=None, work_dir=None, hook=(3.0, 5.0), careful=True):
     """Укорачивает src до target_sec (±tolerance) и пишет в dst. Возвращает отчёт (dict).
 
     transcriber(path) -> [Word]      — по умолчанию faster-whisper (локально);
     scorer(beats, analysis)           — внешняя оценка (AI-режим); по умолчанию эвристики.
+    careful=True — бережный режим: ключевые моменты (хук, поворот, шутка/эмоция, развязка,
+    высокие оценки) не вырезаются, и вырезается не больше 60% ролика. Если без потери
+    смысла в длину не уложиться — ролик остаётся длиннее цели, это пишется в отчёт.
     """
     progress = progress or (lambda stage, frac: None)
     own_tmp = work_dir is None
@@ -84,6 +93,18 @@ def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=Non
 
         progress("отбор", 0.55)
         forced = set()
+        hi = target_sec * (1 + tolerance)
+        if careful:
+            floor = info.duration * CAREFUL_KEEP_SHARE
+            if hi < floor:
+                report["warnings"].append(
+                    f"цель {fmt_time(hi)} срезала бы больше 60% ролика — оставляю не меньше "
+                    f"{fmt_time(floor)}, чтобы не потерять сюжет")
+                lo, hi = floor * 0.95, floor * 1.05
+                target_sec, tolerance = (lo + hi) / 2, (hi - lo) / (lo + hi)
+            for i, b in enumerate(beats):
+                if not b.must and (b.score >= PROTECT_SCORE or (b.score >= KEY_SCORE and KEY_TAGS & set(b.tags))):
+                    forced.add(i)
         kept = select.choose(beats, target_sec, tolerance, forced)
         for _ in range(MAX_COHERENCE_ROUNDS):
             problems = [(j, why) for j, why in coherence.find_problems(beats, kept) if j not in forced]
@@ -94,6 +115,12 @@ def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=Non
                 report["warnings"].append("вернул кусок: " + why)
             kept = select.choose(beats, target_sec, tolerance, forced)
         runs = _runs(beats, kept)
+        kept_len = sum(e - s for s, e, _ in runs)
+        overflow = kept_len > hi + 0.1
+        if overflow:
+            report["warnings"].append(
+                f"оставил {fmt_time(kept_len)} вместо {fmt_time(hi)}, чтобы не потерять смысл: "
+                f"ключевые моменты не вырезаю")
 
         segments = [(s, e) for s, e, _ in runs]
         stats = {}
@@ -102,7 +129,8 @@ def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=Non
             render.render(src, dst, segments, info)
             joints = list(np.cumsum([e - s for s, e in segments])[:-1])
             progress("проверка", 0.92)
-            problems, stats = verify.check(dst, joints, target_sec, tolerance, work)
+            # если сознательно оставили длиннее цели — длину не проверяем, остальное проверяем
+            problems, stats = verify.check(dst, joints, 0 if overflow else target_sec, tolerance, work)
             joint_problems = [k for k, _ in problems if k is not None]
             if not problems or not joint_problems:
                 break
@@ -123,6 +151,7 @@ def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=Non
             report["warnings"].append(why)
 
         report.update(
+            target=round(target_sec, 2), tolerance=round(tolerance, 4), longer_than_target=overflow,
             status="ok" if not report["warnings"] else "ok_with_warnings",
             after=stats.get("duration"), checks=stats, segments=[[round(s, 2), round(e, 2)] for s, e in segments],
             cuts=[{"at": round(e, 2), "resume": round(s2, 2),
@@ -180,10 +209,11 @@ def fmt_time(t):
 def format_report(r):
     """Отчёт для пользователя (текст)."""
     if r["status"] == "already_short":
-        return (f"Ролик уже короче цели: {fmt_time(r['before'])} ≤ {fmt_time(r['target'])} "
-                f"(+{int(r['tolerance'] * 100)}%). Ничего не резал.")
+        return (f"Ролик уже нужной длины: {fmt_time(r['before'])} ≤ "
+                f"{fmt_time(r['target'] * (1 + r['tolerance']))}. Ничего не резал.")
+    lo, hi = r["target"] * (1 - r["tolerance"]), r["target"] * (1 + r["tolerance"])
     lines = [f"✂️ Было {fmt_time(r['before'])} → стало {fmt_time(r['after'])} "
-             f"(цель {fmt_time(r['target'])} ±{int(r['tolerance'] * 100)}%)",
+             f"(нужно {fmt_time(lo)}–{fmt_time(hi)})",
              f"Резов: {len(r['cuts'])}, все в паузах речи"
              + (f" ({sum(c['scene'] for c in r['cuts'])} совпали со сменой кадра)" if r["cuts"] else ""),
              "Хук в начале и финал сохранены." if r.get("hook_kept") else ""]

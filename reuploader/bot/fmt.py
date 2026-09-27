@@ -48,7 +48,7 @@ def fit_line(extra):
     if fit.get("status") == "error":
         return f"\n⚠️ Длину не подогнал: {fit.get('error', '')[:150]} — залил как есть"
     if fit.get("status") == "already_short":
-        return f"\n✂️ Ролик уже короче цели ({duration(fit['target'])}) — не резал"
+        return "\n✂️ Ролик уже нужной длины — не резал"
     return f"\n✂️ Длина подогнана: {duration(fit['before'])} → {duration(fit['after'])}"
 
 

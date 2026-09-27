@@ -132,7 +132,7 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
     return rank([v for v in pool if v["id"] not in exclude_ids], **opts)[:count]
 
 
-def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None):
+def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None, fit_tolerance=0.05):
     """Скачивает видео, при необходимости подгоняет длину (умная обрезка) и применяет эффекты.
 
     fit_target — целевая длина, сек (None — не резать). Результат подгонки — в meta["fit"]:
@@ -150,7 +150,8 @@ def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None):
 
         cut = work / f"{meta['id']}.fit.mp4"
         try:
-            report = smart_cut(src, cut, fit_target, transcriber=transcriber, work_dir=work / "fit_tmp")
+            report = smart_cut(src, cut, fit_target, tolerance=fit_tolerance, transcriber=transcriber,
+                               work_dir=work / "fit_tmp")
             meta["fit"] = report
             if report["status"] != "already_short" and cut.exists():
                 fx_input = cut

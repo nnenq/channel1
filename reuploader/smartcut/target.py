@@ -17,8 +17,11 @@ def target_from_videos(videos, top_share=TOP_SHARE):
 
 
 def parse_duration(s):
-    """'1:05' / '65' / '65s' / '1м5с' -> 65.0"""
+    """'1:05' / '1.05' (минуты.секунды) / '65' / '65s' / '1м5с' -> 65.0"""
     s = s.strip().lower().replace(",", ".")
+    m = re.fullmatch(r"(\d+)\.(\d{2})", s)
+    if m and int(m.group(2)) < 60:      # «1.35» пишут как 1 мин 35 с
+        return int(m.group(1)) * 60 + int(m.group(2))
     if ":" in s:
         parts = [float(p) for p in s.split(":")]
         sec = 0.0
@@ -29,6 +32,27 @@ def parse_duration(s):
     if not m or not any(m.groups()):
         raise ValueError(f"не понял длительность: {s}")
     return float(m.group(1) or 0) * 60 + float(m.group(2) or 0)
+
+
+def parse_range(s):
+    """'1:35-2:35' / '1.35–2.35' / 'от 95 до 155' -> (95.0, 155.0); одно число -> (x, x)."""
+    s = s.strip().lower().replace("от", " ").replace("до", "-").replace("—", "-").replace("–", "-")
+    parts = [p for p in re.split(r"\s*-\s*", s.strip()) if p.strip()]
+    if len(parts) == 1:
+        v = parse_duration(parts[0])
+        return v, v
+    if len(parts) != 2:
+        raise ValueError(f"не понял диапазон: {s}")
+    a, b = sorted((parse_duration(parts[0]), parse_duration(parts[1])))
+    return a, b
+
+
+def fit_params(lo, hi, default_tol=0.05):
+    """Диапазон длины -> (цель, допуск) для smart_cut: итог попадёт в [lo, hi]."""
+    if hi <= lo:
+        return lo, default_tol
+    mid = (lo + hi) / 2
+    return mid, (hi - lo) / 2 / mid
 
 
 def parse_views(s):

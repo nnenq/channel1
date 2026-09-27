@@ -53,16 +53,22 @@ def fit_target_for(db, project):
     """Целевая длина для подгонки: своя или «как на канале» (медиана лучших 30% по просмотрам).
 
     «Как на канале» — по твоему каналу для перезалива; если на нём пока мало роликов,
-    по каналам-источникам. Считается раз в сутки и кэшируется в проекте."""
+    по каналам-источникам. Считается раз в сутки и кэшируется в проекте.
+    «Диапазон» — итог где-то между fit_min и fit_max. Возвращает (цель, допуск) или None."""
     mode = project.get("fit_mode") or "off"
     if mode == "fixed":
-        return project["fit_seconds"] or None
+        return (project["fit_seconds"], 0.05) if project["fit_seconds"] else None
+    if mode == "range":
+        from ..smartcut.target import fit_params
+
+        lo, hi = project.get("fit_min") or 0, project.get("fit_max") or 0
+        return fit_params(lo, hi) if hi else None
     if mode != "channel":
         return None
     cached_at = project.get("fit_cached_at")
     if project.get("fit_cached") and cached_at and \
             datetime.now(timezone.utc) - datetime.fromisoformat(cached_at) < FIT_REFRESH:
-        return project["fit_cached"]
+        return project["fit_cached"], 0.05
     from ..smartcut.target import target_from_videos
     from ..source import list_shorts
 
@@ -83,8 +89,9 @@ def fit_target_for(db, project):
     if target:
         db.update_project(project["id"], fit_cached=target,
                           fit_cached_at=datetime.now(timezone.utc).isoformat())
-        return target
-    return project.get("fit_cached") or project["fit_seconds"] or None
+        return target, 0.05
+    fallback = project.get("fit_cached") or project["fit_seconds"]
+    return (fallback, 0.05) if fallback else None
 
 
 def run_slot(db, settings, slot):
@@ -146,7 +153,8 @@ def run_slot(db, settings, slot):
     # 2. Скачать + (подогнать длину) + уникализировать + (залить)
     work = settings.work_dir / f"p{project['id']}_s{slot['id']}"
     keep = False
-    fit_target = fit_target_for(db, project)
+    fit = fit_target_for(db, project)
+    fit_target, fit_tol = fit if fit else (None, 0.05)
     transcriber = None
     if fit_target:
         from functools import partial
@@ -155,7 +163,7 @@ def run_slot(db, settings, slot):
 
         transcriber = partial(whisper_transcribe, model_size=settings.whisper_model)
     try:
-        _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber)
+        _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber, fit_tol)
         title, description, tags = build_text(meta)
         new_id = None
         publish_at = None

@@ -164,7 +164,42 @@ async function showHome() {
     <div class="card"><div class="row">
       <input id="newName" class="grow" placeholder="Название, напр. HappyFlick 2">
       <button onclick="createProject()">Создать</button></div></div>
-    <div class="hint">Время: ${esc(data.tz)}, сейчас ${data.now}</div>`;
+    <div class="hint">Время: ${esc(data.tz)}, сейчас ${data.now}</div>
+    ${data.is_owner ? `<h2>Доступ к боту</h2><div class="card" id="access"><div class="row"><span class="spin"></span></div></div>
+    <div class="hint">Кроме тебя ботом пользуются только те, кому ты дал доступ: они видят все проекты и получают уведомления. Незнакомцы могут лишь отправить тебе запрос.</div>` : ""}`;
+  if (data.is_owner) loadAccess();
+}
+
+const ACCESS_BADGE = { pending: ["warn", "ждёт"], allowed: ["ok", "есть доступ"], blocked: ["", "заблокирован"] };
+async function loadAccess(d) {
+  d = d || await guarded(() => api("GET", "/api/access"));
+  const box = document.getElementById("access");
+  if (!d || !box) return;
+  const btn = (uid, action, text, cls = "ghost") =>
+    `<button class="${cls}" onclick="accessChange(${uid}, '${action}')">${text}</button>`;
+  box.innerHTML = d.users.map(u => {
+    const [cls, label] = ACCESS_BADGE[u.status] || ["", u.status];
+    const actions = u.status === "pending" ? btn(u.id, "allow", "Дать") + btn(u.id, "block", "Отклонить", "danger")
+      : u.status === "allowed" ? btn(u.id, "remove", "Забрать", "danger")
+      : btn(u.id, "allow", "Дать") + btn(u.id, "remove", "Удалить", "danger");
+    return `<div class="row"><div class="grow" style="min-width:0">
+        <div class="ellipsis">${esc(u.name || "без имени")}${u.username ? ` <span class="sub">@${esc(u.username)}</span>` : ""}</div>
+        <div class="sub">id ${u.id} · <span class="badge ${cls}">${label}</span></div></div>${actions}</div>`;
+  }).join("") + `<div class="row"><button class="ghost" onclick="makeInvite()">🔗 Создать ссылку-приглашение</button></div>
+    <div id="invite"></div>`;
+}
+async function accessChange(uid, action) {
+  if (action !== "allow" && !await confirmMsg(action === "remove" ? "Забрать доступ?" : "Отклонить и заблокировать?")) return;
+  const d = await guarded(() => api("POST", `/api/access/${uid}`, { action }));
+  if (d) { haptic("success"); loadAccess(d); }
+}
+async function makeInvite() {
+  const d = await guarded(() => api("POST", "/api/access/invite"));
+  if (!d) return;
+  document.getElementById("invite").innerHTML = `<div class="row"><input class="grow" readonly value="${esc(d.link)}" onclick="this.select()">
+      <button onclick="navigator.clipboard?.writeText('${esc(d.link)}').then(() => toast('Скопировано'))">Копировать</button></div>
+    <div class="row"><button class="ghost" onclick="tg?.openTelegramLink ? tg.openTelegramLink('https://t.me/share/url?url=' + encodeURIComponent('${esc(d.link)}')) : openLink('${esc(d.link)}')">📤 Отправить в Telegram</button></div>
+    <div class="hint" style="padding-bottom:10px">Одноразовая, действует 24 часа: кто первым откроет — получит доступ.</div>`;
 }
 async function createProject() {
   const name = document.getElementById("newName").value;

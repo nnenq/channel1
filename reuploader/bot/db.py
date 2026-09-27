@@ -70,6 +70,20 @@ CREATE TABLE IF NOT EXISTS slots (
     info TEXT
 );
 CREATE INDEX IF NOT EXISTS slots_due ON slots(status, run_at);
+-- Кто кроме владельца имеет доступ к боту. status: pending | allowed | blocked
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    username TEXT,
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- Одноразовые ссылки-приглашения
+CREATE TABLE IF NOT EXISTS invites (
+    code TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    used_by INTEGER
+);
 -- Замеры просмотров роликов каналов-источников: по ним считается прирост "сейчас"
 CREATE TABLE IF NOT EXISTS view_snapshots (
     video_id TEXT NOT NULL,
@@ -260,6 +274,40 @@ class DB:
                            AND p.privacy = 'scheduled' AND p.delivery != 'telegram'
                            AND (p.enabled = 1 OR s.kind = 'manual')
                          ORDER BY s.run_at""", not_before_iso)
+
+    # --- доступ ---
+    def user(self, uid):
+        return self.one("SELECT * FROM users WHERE id = ?", uid)
+
+    def users(self):
+        return self.q("""SELECT * FROM users ORDER BY
+                         CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, updated_at DESC""")
+
+    def allowed_ids(self):
+        return [r["id"] for r in self.q("SELECT id FROM users WHERE status = 'allowed'")]
+
+    def set_user(self, uid, status, name=None, username=None):
+        self.x("""INSERT INTO users(id, name, username, status, updated_at) VALUES(?, ?, ?, ?, ?)
+                  ON CONFLICT(id) DO UPDATE SET status = excluded.status,
+                    name = COALESCE(excluded.name, users.name),
+                    username = COALESCE(excluded.username, users.username),
+                    updated_at = excluded.updated_at""",
+               uid, name, username, status, iso(utcnow()))
+
+    def delete_user(self, uid):
+        self.x("DELETE FROM users WHERE id = ?", uid)
+
+    def create_invite(self, code):
+        self.x("INSERT INTO invites(code, created_at) VALUES(?, ?)", code, iso(utcnow()))
+
+    def use_invite(self, code, uid, max_age):
+        """Помечает приглашение использованным. True, если оно было действующим."""
+        with self.lock:
+            row = self.one("SELECT * FROM invites WHERE code = ? AND used_by IS NULL", code)
+            if not row or utcnow() - from_iso(row["created_at"]) > max_age:
+                return False
+            self.x("UPDATE invites SET used_by = ? WHERE code = ?", uid, code)
+            return True
 
     # --- замеры просмотров ---
     def last_snapshot_at(self, channel):

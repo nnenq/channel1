@@ -6,7 +6,7 @@ import re
 import secrets
 import shutil
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiohttp
@@ -21,6 +21,7 @@ from .web import WebApp
 
 log = logging.getLogger("bot")
 TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+INVITE_TTL = timedelta(hours=24)
 PRIVACY_RU = {"public": "публичное", "unlisted": "по ссылке", "private": "приватное",
               "scheduled": "публичное"}
 
@@ -34,6 +35,7 @@ class BotApp:
         self.tg = tg
         self.public_url = ""
         self.sched = None
+        self.username = ""
 
     @property
     def owner_id(self):
@@ -58,9 +60,55 @@ class BotApp:
         url = self.app_url(fragment)
         return {"text": text, "web_app": {"url": url}} if url else None
 
+    def has_access(self, uid):
+        return uid is not None and (uid == self.owner_id or uid in self.db.allowed_ids())
+
+    def recipients(self):
+        """Кому слать уведомления: владелец и все, кому он дал доступ."""
+        ids = [self.owner_id] if self.owner_id else []
+        return ids + [u for u in self.db.allowed_ids() if u != self.owner_id]
+
     async def notify_text(self, text, buttons=None):
-        if self.owner_id:
-            await self.tg.send(self.owner_id, text, buttons)
+        for uid in self.recipients():
+            await self.tg.send(uid, text, buttons)
+
+    # ----- доступ -----
+    async def grant(self, uid, name=None, username=None, via=""):
+        self.db.set_user(uid, "allowed", name, username)
+        await self.set_menu_button(uid)
+        btn = self.app_button()
+        await self.tg.send(uid, "✅ Владелец дал тебе доступ к боту. Панель — кнопкой ниже или «Панель» "
+                                "слева от поля ввода.\n/status — план на сегодня", [[btn]] if btn else None)
+        who = esc(name or username or uid)
+        await self.tg.send(self.owner_id, f"👤 {who} теперь имеет доступ{via}.")
+
+    async def revoke(self, uid, block=False):
+        if block:
+            self.db.set_user(uid, "blocked")
+        else:
+            self.db.delete_user(uid)
+        try:
+            await self.tg.call("setChatMenuButton", chat_id=uid, menu_button={"type": "default"})
+        except Exception:  # noqa: BLE001
+            pass
+
+    def create_invite(self):
+        code = secrets.token_urlsafe(9)
+        self.db.create_invite(code)
+        return f"https://t.me/{self.username}?start=inv_{code}"
+
+    async def request_access(self, user):
+        """Незнакомец написал /start — спрашиваем владельца."""
+        name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or None
+        uname = user.get("username")
+        self.db.set_user(user["id"], "pending", name, uname)
+        await self.tg.send(user["id"], "Это личный бот. Запрос на доступ отправлен владельцу — "
+                                       "если он одобрит, я напишу.")
+        who = esc(name or "без имени") + (f" (@{esc(uname)})" if uname else "")
+        await self.tg.send(self.owner_id, f"👤 {who}, id <code>{user['id']}</code>, просит доступ к боту.", [[
+            {"text": "✅ Дать доступ", "callback_data": f"acc:{user['id']}"},
+            {"text": "❌ Отклонить", "callback_data": f"dec:{user['id']}"},
+        ]])
 
     # ----- уведомления от планировщика -----
     async def uploaded(self, project, result):
@@ -72,12 +120,13 @@ class BotApp:
             f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}\n{result.info}")
 
     async def video(self, project, result):
-        """Обработанное видео — владельцу в Telegram, с текстом для ручной публикации."""
+        """Обработанное видео — всем, у кого есть доступ, с текстом для ручной публикации."""
         e = result.extra
         caption = (f"🎬 <b>{esc(project['name'])}</b>: готово к публикации (уже обработано)\n"
                    f"{esc(result.title)}\nОригинал: {fmt.original_line(e, self.s.tz)}\n{e['source_url']}")
         try:
-            await self.tg.send_video(self.owner_id, e["file"], caption)
+            for uid in self.recipients():
+                await self.tg.send_video(uid, e["file"], caption)
         except Exception as err:  # noqa: BLE001
             await self.notify_text(f"❌ <b>{esc(project['name'])}</b>: не смог отправить видео в Telegram: "
                                    f"<code>{esc(err)}</code>")
@@ -139,11 +188,20 @@ class BotApp:
         if not self.owner_id and text.startswith("/start"):
             self.db.set_meta("owner_id", user["id"])
             log.info("владелец бота: %s (%s)", user.get("username"), user["id"])
-            await self.set_menu_button()
-        if user["id"] != self.owner_id:
-            # Чужим не отвечаем вообще — для них бот выглядит неработающим
-            log.info("чужой пользователь %s (id %s) написал боту — игнорирую",
-                     user.get("username"), user["id"])
+            await self.set_menu_button(user["id"])
+        if not self.has_access(user["id"]):
+            known = self.db.user(user["id"])
+            arg = text.split(maxsplit=1)[1] if " " in text else ""
+            if arg.startswith("inv_") and not (known and known["status"] == "blocked"):
+                if self.db.use_invite(arg[4:], user["id"], INVITE_TTL):
+                    name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or None
+                    await self.grant(user["id"], name, user.get("username"), " по приглашению")
+                else:
+                    await self.tg.send(chat, "Приглашение уже использовано или устарело — попроси новое.")
+                return
+            if not known and text.startswith("/start"):
+                await self.request_access(user)
+            # pending — запрос уже отправлен, blocked — молчим
             return
 
         if text.startswith("/start") or text.startswith("/app"):
@@ -189,7 +247,26 @@ class BotApp:
         data = cq.get("data", "")
         user = cq.get("from", {})
         answer = "Готово"
-        if user.get("id") != self.owner_id:
+        if data.startswith(("acc:", "dec:")) and user.get("id") == self.owner_id:
+            uid = int(data[4:])
+            known = self.db.user(uid) or {}
+            if data.startswith("acc:"):
+                await self.grant(uid, known.get("name"), known.get("username"))
+                answer = "Доступ выдан"
+            else:
+                await self.revoke(uid, block=True)
+                answer = "Отклонено"
+            if cq.get("message"):
+                m = cq["message"]
+                try:
+                    await self.tg.call("editMessageText", chat_id=m["chat"]["id"], message_id=m["message_id"],
+                                       text=m.get("text", "") + ("\n\n✅ Доступ выдан" if data.startswith("acc:")
+                                                                 else "\n\n❌ Отклонено"))
+                except Exception:  # noqa: BLE001
+                    pass
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
+        if not self.has_access(user.get("id")):
             answer = "Нет доступа"
         elif data.startswith("rp:"):
             _, pid, vid = data.split(":", 2)
@@ -212,14 +289,16 @@ class BotApp:
             except Exception:  # noqa: BLE001
                 pass
 
-    async def set_menu_button(self):
-        if not (self.owner_id and self.public_url):
+    async def set_menu_button(self, uid=None):
+        """Кнопка «Панель» у владельца и всех, кому дан доступ (или у одного uid)."""
+        if not self.public_url:
             return
-        try:
-            await self.tg.call("setChatMenuButton", chat_id=self.owner_id, menu_button={
-                "type": "web_app", "text": "Панель", "web_app": {"url": self.app_url()}})
-        except Exception as e:  # noqa: BLE001
-            log.warning("не удалось поставить кнопку меню: %s", e)
+        for chat in ([uid] if uid else self.recipients()):
+            try:
+                await self.tg.call("setChatMenuButton", chat_id=chat, menu_button={
+                    "type": "web_app", "text": "Панель", "web_app": {"url": self.app_url()}})
+            except Exception as e:  # noqa: BLE001
+                log.warning("не удалось поставить кнопку меню для %s: %s", chat, e)
 
 
 def find_cloudflared(configured):
@@ -280,6 +359,7 @@ async def main():
         tg = TG(s.bot_token, session)
         me = await tg.call("getMe")
         bot = BotApp(db, s, tg)
+        bot.username = me["username"]
         sched = Scheduler(db, s, bot)
         bot.sched = sched
 
@@ -306,8 +386,8 @@ async def main():
         print(f"\n  Бот @{me['username']} запущен. Напиши ему /start в Telegram.\n"
               f"  Не закрывай это окно, пока нужны заливки.\n", flush=True)
         if bot.owner_id:
-            await bot.notify_text("🟢 Бот запущен.\n" + bot.status_text(),
-                                  [[bot.app_button()]] if bot.app_button() else None)
+            await bot.tg.send(bot.owner_id, "🟢 Бот запущен.\n" + bot.status_text(),
+                              [[bot.app_button()]] if bot.app_button() else None)
         try:
             await asyncio.gather(tg.poll(bot.handle), sched.loop())
         finally:

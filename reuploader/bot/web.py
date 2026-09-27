@@ -88,6 +88,9 @@ class WebApp:
         r.add_post("/api/projects/{pid}/replan", self.replan)
         r.add_delete("/api/projects/{pid}/slots/{sid}", self.cancel_slot)
         r.add_post("/api/projects/{pid}/auth", self.start_oauth)
+        r.add_get("/api/access", self.access_list)
+        r.add_post("/api/access/invite", self.access_invite)
+        r.add_post("/api/access/{uid}", self.access_change)
         return app
 
     @staticmethod
@@ -101,8 +104,11 @@ class WebApp:
             user = check_init_data(request.headers.get("X-Init-Data", ""), self.s.bot_token)
             if not user:
                 return web.json_response({"error": "Открой панель из Telegram-бота."}, status=401)
-            if user.get("id") != self.bot.owner_id:
-                return web.json_response({"error": "Это личная панель владельца бота."}, status=403)
+            if not self.bot.has_access(user.get("id")):
+                return web.json_response({"error": "Нет доступа — попроси владельца бота."}, status=403)
+            if request.path.startswith("/api/access") and user.get("id") != self.bot.owner_id:
+                return web.json_response({"error": "Доступом управляет только владелец."}, status=403)
+            request["user"] = user
         try:
             return await handler(request)
         except ApiError as e:
@@ -160,6 +166,7 @@ class WebApp:
         return web.json_response({
             "projects": [self._summary(p) for p in self.db.projects()],
             "tz": str(self.s.tz), "now": now.strftime("%H:%M"),
+            "is_owner": request["user"].get("id") == self.bot.owner_id,
         })
 
     async def create_project(self, request):
@@ -382,6 +389,31 @@ class WebApp:
             raise ApiError("Эту публикацию уже нельзя отменить.")
         self.db.set_slot(slot["id"], "cancelled", "отменено вручную")
         return await self.get_project(request)
+
+    # ---------- доступ (только владелец) ----------
+    async def access_list(self, request):
+        return web.json_response({"users": [{
+            "id": u["id"], "name": u["name"], "username": u["username"], "status": u["status"],
+        } for u in self.db.users()]})
+
+    async def access_invite(self, request):
+        return web.json_response({"link": self.bot.create_invite()})
+
+    async def access_change(self, request):
+        uid = int(request.match_info["uid"])
+        action = (await request.json()).get("action")
+        known = self.db.user(uid)
+        if not known or uid == self.bot.owner_id:
+            raise ApiError("Такого пользователя нет.")
+        if action == "allow":
+            await self.bot.grant(uid, known["name"], known["username"])
+        elif action == "block":
+            await self.bot.revoke(uid, block=True)
+        elif action == "remove":
+            await self.bot.revoke(uid)
+        else:
+            raise ApiError("Неизвестное действие.")
+        return await self.access_list(request)
 
     # ---------- привязка канала через Google ----------
     async def start_oauth(self, request):

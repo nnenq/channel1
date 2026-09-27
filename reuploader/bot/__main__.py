@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import shutil
 import sys
 from datetime import datetime
@@ -41,8 +42,17 @@ class BotApp:
         v = self.db.get_meta("owner_id")
         return int(v) if v else None
 
+    @property
+    def app_key(self):
+        """Секрет в адресе панели: без него страница отвечает «не найдено»."""
+        key = self.db.get_meta("app_key")
+        if not key:
+            key = secrets.token_urlsafe(18)
+            self.db.set_meta("app_key", key)
+        return key
+
     def app_url(self, fragment=""):
-        return f"{self.public_url}/app{fragment}" if self.public_url else None
+        return f"{self.public_url}/app?k={self.app_key}{fragment}" if self.public_url else None
 
     def app_button(self, text="📱 Открыть панель", fragment=""):
         url = self.app_url(fragment)
@@ -117,10 +127,12 @@ class BotApp:
     async def handle(self, update):
         if "callback_query" in update:
             return await self.on_callback(update["callback_query"])
+        if "my_chat_member" in update:
+            return await self.on_added(update["my_chat_member"])
         msg = update.get("message") or {}
         user = msg.get("from") or {}
         text = (msg.get("text") or "").strip()
-        if not user or not text.startswith("/"):
+        if not user or not text.startswith("/") or msg["chat"].get("type") != "private":
             return
         chat = msg["chat"]["id"]
 
@@ -129,7 +141,9 @@ class BotApp:
             log.info("владелец бота: %s (%s)", user.get("username"), user["id"])
             await self.set_menu_button()
         if user["id"] != self.owner_id:
-            await self.tg.send(chat, "Это личный бот. 🙂")
+            # Чужим не отвечаем вообще — для них бот выглядит неработающим
+            log.info("чужой пользователь %s (id %s) написал боту — игнорирую",
+                     user.get("username"), user["id"])
             return
 
         if text.startswith("/start") or text.startswith("/app"):
@@ -160,6 +174,16 @@ class BotApp:
             if not slots:
                 lines.append("  на сегодня ничего")
         return "\n".join(lines) or "Проектов пока нет — открой панель и создай первый."
+
+    async def on_added(self, upd):
+        """Бота добавили в группу/канал — сразу выходим."""
+        chat = upd.get("chat", {})
+        if chat.get("type") != "private" and upd.get("new_chat_member", {}).get("status") in ("member", "administrator"):
+            log.info("бота добавили в %s «%s» — выхожу", chat.get("type"), chat.get("title"))
+            try:
+                await self.tg.call("leaveChat", chat_id=chat["id"])
+            except Exception:  # noqa: BLE001
+                pass
 
     async def on_callback(self, cq):
         data = cq.get("data", "")

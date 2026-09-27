@@ -58,7 +58,7 @@ class TG:
         while True:
             try:
                 updates = await self.call("getUpdates", offset=offset, timeout=50,
-                                          allowed_updates=["message", "callback_query"])
+                                          allowed_updates=["message", "callback_query", "my_chat_member"])
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001

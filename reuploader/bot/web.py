@@ -90,6 +90,11 @@ class WebApp:
         r.add_post("/api/projects/{pid}/auth", self.start_oauth)
         return app
 
+    @staticmethod
+    def from_internet(request):
+        """Запрос пришёл через туннель Cloudflare (а не с этого компьютера)."""
+        return "Cf-Connecting-Ip" in request.headers or "Cf-Ray" in request.headers
+
     @web.middleware
     async def auth_mw(self, request, handler):
         if request.path.startswith("/api/"):
@@ -105,12 +110,16 @@ class WebApp:
 
     # ---------- страницы ----------
     async def root(self, request):
-        if "code" in request.query or "error" in request.query:
+        # Возврат из входа в Google принимается только на этом компьютере (localhost)
+        if ("code" in request.query or "error" in request.query) and not self.from_internet(request):
             return await self.oauth_callback(request)
-        raise web.HTTPFound("/app")
+        raise web.HTTPNotFound()
 
     async def index(self, request):
-        return web.FileResponse(WEBAPP_DIR / "index.html", headers={"Cache-Control": "no-store"})
+        if not hmac.compare_digest(request.query.get("k", ""), self.bot.app_key):
+            raise web.HTTPNotFound()
+        return web.FileResponse(WEBAPP_DIR / "index.html", headers={
+            "Cache-Control": "no-store", "X-Robots-Tag": "noindex", "Referrer-Policy": "no-referrer"})
 
     # ---------- хелперы ----------
     def _project(self, request):

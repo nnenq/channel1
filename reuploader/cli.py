@@ -40,6 +40,7 @@ def run_job(job, dry_run=False, source_override=None, keep_files=False):
         sources, history, count=job["per_run"], scan_limit=job["scan_limit"],
         min_views=job["min_views"], strategy=job.get("strategy", "top"),
         sort_by=job.get("sort_by", "views"), max_age_days=job.get("max_age_days", 0),
+        min_duration=job.get("min_duration", 0), max_duration=job.get("max_duration", 0),
         enrich=(lambda vs: enrich(vs, youtube)) if youtube else None,
     )
     if not picked:

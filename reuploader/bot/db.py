@@ -104,11 +104,13 @@ MIGRATIONS = [
     ("uploads", "published", "TEXT"),
     ("projects", "delivery", "TEXT NOT NULL DEFAULT 'youtube'"),
     ("projects", "user_id", "INTEGER"),
+    ("projects", "min_duration", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "max_duration", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 PROJECT_FIELDS = {
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
-    "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery",
+    "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery", "min_duration", "max_duration",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }
 

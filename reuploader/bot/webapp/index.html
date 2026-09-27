@@ -264,6 +264,8 @@ async function showProject(id, data) {
         `<button class="${p.sort_by === k ? "on" : ""}" onclick="patch({sort_by:'${k}'})">${v}</button>`).join("")}</div></div>
       <div class="row"><div class="grow">Не старше, дней<div class="sub">0 — любые</div></div>
         <input class="num" type="number" min="0" value="${p.max_age_days}" onchange="patch({max_age_days:+this.value})"></div>
+      <div class="row"><div class="grow">Длина ролика, сек<div class="sub">0 — без ограничения</div></div>
+        <input class="num" type="number" min="0" placeholder="от" value="${p.min_duration || ""}" onchange="patch({min_duration:+this.value})">–<input class="num" type="number" min="0" placeholder="до" value="${p.max_duration || ""}" onchange="patch({max_duration:+this.value})"></div>
     </div>
     <div class="hint">${{
       trend: "<b>🔥 В тренде:</b> сначала ролики, которые набирают просмотры прямо сейчас (прирост за последние сутки), а когда они закончатся — остальные по числу просмотров. Бот замеряет просмотры каждые 2 часа: точный прирост появится через 3+ часа после запуска, до этого для свежих роликов берутся средние просмотры в день.",

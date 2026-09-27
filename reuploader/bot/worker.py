@@ -91,12 +91,15 @@ def run_slot(db, settings, slot):
             picked = pick(sources, db.uploaded_ids(project["id"]), count=1,
                           strategy=project["strategy"], sort_by=project["sort_by"],
                           max_age_days=project["max_age_days"],
+                          min_duration=project["min_duration"], max_duration=project["max_duration"],
                           enrich=(lambda vs: enrich(vs, youtube)) if youtube else None,
                           trend=trends.hook(db))
         except Exception as e:  # noqa: BLE001
             return Result("failed", "не удалось получить список видео: " + _error_text(e))
         if not picked:
             why = f" за последние {project['max_age_days']} дн." if project["max_age_days"] else ""
+            if project["min_duration"] or project["max_duration"]:
+                why += " подходящей длины"
             return Result("skipped", f"новых видео{why} нет — всё уже перезалито", exhausted=True)
         info = picked[0]
         url, title_hint, views, source_url = info["url"], info["title"], info["view_count"], info["source"]

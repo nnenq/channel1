@@ -200,7 +200,8 @@ class WebApp:
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
-                "sort_by", "max_age_days", "delivery", "channel_title", "channel_id")} | {
+                "sort_by", "max_age_days", "min_duration", "max_duration", "delivery",
+                "channel_title", "channel_id")} | {
                                                    "linked": bool(p["token_path"]),
                                                    "ready": bool(p["token_path"]) or not needs_youtube(p),
                                                    "exhausted": bool(p["exhausted_on"])},
@@ -264,6 +265,12 @@ class WebApp:
             if body["sort_by"] not in ("trend", "views", "per_day"):
                 raise ApiError("Неизвестная сортировка.")
             upd["sort_by"] = body["sort_by"]
+        if "min_duration" in body or "max_duration" in body:
+            mn = _int(body.get("min_duration", p["min_duration"]) or 0, 0, 36000, "Длина от, сек")
+            mx = _int(body.get("max_duration", p["max_duration"]) or 0, 0, 36000, "Длина до, сек")
+            if mx and mn > mx:
+                raise ApiError("Минимальная длина больше максимальной.")
+            upd.update(min_duration=mn, max_duration=mx)
         if "max_age_days" in body:
             upd["max_age_days"] = _int(body["max_age_days"] or 0, 0, 3650, "Не старше, дней")
         if "effects" in body:
@@ -302,7 +309,7 @@ class WebApp:
         return await self.get_project(request)
 
     def _reset_exhausted(self, p, upd):
-        if p["exhausted_on"] and {"sort_by", "max_age_days", "strategy"} & upd.keys():
+        if p["exhausted_on"] and {"sort_by", "max_age_days", "strategy", "min_duration", "max_duration"} & upd.keys():
             upd["exhausted_on"] = None
 
     async def delete_source(self, request):

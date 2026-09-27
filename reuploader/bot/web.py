@@ -16,6 +16,8 @@ from . import trends
 from .db import from_iso, iso, needs_youtube, utcnow
 from .telegram import esc
 
+SHORTS_ID = re.compile(r"shorts/([\w-]{11})")
+
 WEBAPP_DIR = Path(__file__).parent / "webapp"
 CHANNEL_RE = re.compile(
     r"^(?:https?://)?(?:www\.|m\.)?youtube\.com/(@[\w.\-%]+|channel/UC[\w-]{22}|c/[\w.\-%]+|user/[\w.\-%]+)",
@@ -96,6 +98,7 @@ class WebApp:
         r.add_post("/api/projects/{pid}/publish", self.publish)
         r.add_post("/api/projects/{pid}/replan", self.replan)
         r.add_delete("/api/projects/{pid}/slots/{sid}", self.cancel_slot)
+        r.add_delete("/api/projects/{pid}/uploads/{uid}", self.delete_upload)
         r.add_post("/api/projects/{pid}/auth", self.start_oauth)
         r.add_post("/api/projects/{pid}/auth-device", self.start_device_link)
         from . import cut_api
@@ -196,12 +199,24 @@ class WebApp:
         now = datetime.now(self.s.tz)
         since = iso(datetime.combine(now.date(), datetime.min.time(), self.s.tz))
         slots = [s for s in self.db.upcoming_slots(p["id"], since) if s["status"] != "cancelled"]
+        rows = self.db.uploads(p["id"])
         uploads = [{
-            "title": u["title"], "views": u["views"], "at": self._local(u["uploaded_at"]).strftime("%d.%m %H:%M"),
+            "id": u["id"], "title": u["title"], "views": u["views"],
+            "at": self._local(u["uploaded_at"]).strftime("%d.%m %H:%M"),
             "url": f"https://youtube.com/shorts/{u['new_video_id']}" if u["new_video_id"] else None,
-            "source": f"https://youtube.com/shorts/{u['video_id']}",
+            "source": f"https://youtube.com/shorts/{u['video_id']}" if len(u["video_id"]) == 11
+            else (u["source_url"] or ""),
             "published": u["published"],
-        } for u in self.db.uploads(p["id"])]
+        } for u in rows]
+        # ролики из «Плана» -> запись истории (чтобы и там можно было удалить)
+        by_new_id = {u["new_video_id"]: u["id"] for u in rows if u["new_video_id"]}
+        slot_json = []
+        for s in slots:
+            j = self._slot_json(s)
+            if s["status"] == "done":
+                vid = SHORTS_ID.search(s["info"] or "")
+                j["upload_id"] = by_new_id.get(vid.group(1)) if vid else None
+            slot_json.append(j)
         return web.json_response({
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
@@ -214,7 +229,7 @@ class WebApp:
                                                    "exhausted": bool(p["exhausted_on"])},
             "sources": [{"id": s["id"], "url": s["url"], "label": channel_label(s["url"])}
                         for s in self.db.sources(p["id"])],
-            "slots": [self._slot_json(s) for s in slots],
+            "slots": slot_json,
             "uploads": uploads,
             "total_uploaded": len(self.db.uploaded_ids(p["id"])),
             "device_login": Path(self.s.device_client_secret).exists(),
@@ -462,6 +477,43 @@ class WebApp:
             raise ApiError("Эту публикацию уже нельзя отменить.")
         self.db.set_slot(slot["id"], "cancelled", "отменено вручную")
         return await self.get_project(request)
+
+    async def delete_upload(self, request):
+        """Удалить опубликованный ролик: с YouTube и из истории (?youtube=0 — только из истории).
+
+        Запись остаётся в базе с пометкой deleted_at: этот исходник бот больше не возьмёт."""
+        from ..uploader import AuthError, NoDeleteRights, delete_video, youtube_client
+
+        p = self._project(request)
+        try:
+            row = self.db.upload_row(p["id"], int(request.match_info["uid"]))
+        except ValueError:
+            row = None
+        if not row:
+            raise ApiError("Этого ролика уже нет в истории.", status=404)
+        from_youtube = request.query.get("youtube", "1") != "0" and bool(row["new_video_id"])
+        note = "Убрал из истории"
+        if from_youtube:
+            if not p["token_path"]:
+                raise ApiError("Канал не привязан — удалить с YouTube не могу. Можно убрать только из истории.")
+
+            def work():
+                return delete_video(youtube_client(p["token_path"]), row["new_video_id"])
+            try:
+                existed = await asyncio.get_running_loop().run_in_executor(None, work)
+            except NoDeleteRights:
+                raise ApiError("У бота нет права удалять ролики на этом канале: канал привязан по-старому. "
+                               "Нажми «Сменить» у канала и привяжи его заново — после этого удаление заработает. "
+                               "Или удали ролик в YouTube Studio и убери его отсюда «только из истории».") from None
+            except AuthError as e:
+                raise ApiError(str(e)) from None
+            except Exception as e:  # noqa: BLE001
+                raise ApiError(f"YouTube не дал удалить: {type(e).__name__}: {str(e)[:200]}") from None
+            note = "Удалил с YouTube и из истории" if existed else "На YouTube его уже не было — убрал из истории"
+        self.db.mark_upload_deleted(row["id"])
+        data = json.loads((await self.get_project(request)).text)
+        data["note"] = note
+        return web.json_response(data)
 
     # ---------- доступ (только владелец) ----------
     async def access_list(self, request):

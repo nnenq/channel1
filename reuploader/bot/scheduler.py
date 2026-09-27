@@ -16,6 +16,7 @@ TICK = 20                         # как часто проверять рас�
 MAX_LATE = timedelta(minutes=90)  # если бот был выключен дольше — слот пропускается
 RETRY_AFTER = timedelta(minutes=20)
 SCHEDULE_LEAD = timedelta(minutes=15)
+REPLAN_MIN_DELAY = 15                # минут: после смены настроек первый ролик не раньше
 PLAN_TOMORROW_HOUR = 20              # с этого часа планируем завтрашний день  # publishAt должен быть в будущем — с запасом
 
 
@@ -52,6 +53,10 @@ class Scheduler:
         if existing and not force:
             return []
         earliest = now + timedelta(minutes=2)
+        if force:
+            # Перепланирование из-за смены настроек не должно заливать «прямо сейчас»:
+            # ближайший ролик — не раньше чем через обычный промежуток (минимум 15 мин).
+            earliest = now + timedelta(minutes=max(REPLAN_MIN_DELAY, project["min_gap"] or 0))
 
         if project["schedule_mode"] == "fixed":
             used = {from_iso(s["run_at"]).astimezone(self.s.tz).strftime("%H:%M") for s in existing}

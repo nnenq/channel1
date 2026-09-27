@@ -16,6 +16,8 @@ class AuthError(Exception):
 SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    # удаление роликов из панели (videos.delete) — upload/readonly для этого мало
+    "https://www.googleapis.com/auth/youtube",
 ]
 
 
@@ -93,3 +95,25 @@ def upload(youtube, path, title, description, tags, privacy, category_id, made_f
         if status:
             print(f"    загрузка {int(status.progress() * 100)}%", flush=True)
     return response["id"]
+
+
+class NoDeleteRights(Exception):
+    """Токен привязан без права на удаление — нужно перепривязать канал."""
+
+
+def delete_video(youtube, video_id):
+    """Удаляет ролик с канала. True — удалён, False — его там уже нет."""
+    from googleapiclient.errors import HttpError
+
+    try:
+        youtube.videos().delete(id=video_id).execute()
+        return True
+    except HttpError as e:
+        if e.status_code == 404:
+            return False
+        if e.status_code in (401, 403):
+            reasons = {d.get("reason") for d in (e.error_details or []) if isinstance(d, dict)}
+            if e.status_code == 401 or reasons & {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"} \
+                    or "scope" in str(e).lower():
+                raise NoDeleteRights() from e
+        raise

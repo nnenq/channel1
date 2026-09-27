@@ -158,6 +158,7 @@ MIGRATIONS = [
     ("projects", "fit_cached_at", "TEXT"),
     ("projects", "min_duration", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "max_duration", "INTEGER NOT NULL DEFAULT 0"),
+    ("uploads", "deleted_at", "TEXT"),
 ]
 
 PROJECT_FIELDS = {
@@ -304,8 +305,17 @@ class DB:
                   VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
                pid, source_url, video_id, title, views, published, new_id, iso(utcnow()))
 
-    def uploads(self, pid, limit=30):
-        return self.q("SELECT * FROM uploads WHERE project_id = ? ORDER BY uploaded_at DESC LIMIT ?", pid, limit)
+    def uploads(self, pid, limit=500):
+        """История без удалённых. Удалённые остаются в uploaded_ids — бот не перезальёт их снова."""
+        return self.q("""SELECT * FROM uploads WHERE project_id = ? AND deleted_at IS NULL
+                         ORDER BY uploaded_at DESC, id DESC LIMIT ?""", pid, limit)
+
+    def upload_row(self, pid, upload_id):
+        return self.one("SELECT * FROM uploads WHERE project_id = ? AND id = ? AND deleted_at IS NULL",
+                        pid, upload_id)
+
+    def mark_upload_deleted(self, upload_id):
+        self.x("UPDATE uploads SET deleted_at = ? WHERE id = ?", iso(utcnow()), upload_id)
 
     def repost_candidates(self, pid, limit=3):
         """Уже перезалитые видео — самые просматриваемые, давно не повторявшиеся."""

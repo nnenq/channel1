@@ -73,6 +73,14 @@
   @keyframes s { to { transform: rotate(360deg); } }
   .vid .views { font-variant-numeric: tabular-nums; color: var(--hint); font-size: 13px; white-space: nowrap; }
   a { color: var(--link); text-decoration: none; }
+  .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 8; display: flex; align-items: center; gap: 10px;
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); background: var(--card);
+    box-shadow: 0 -2px 12px rgba(0,0,0,.15); font-size: 14px; }
+  .savebar[hidden] { display: none; }
+  body.dirty { padding-bottom: 72px; }
+  body.dirty .toast { bottom: 84px; }
+  button.bin { background: transparent; color: var(--danger); padding: 4px 6px; font-size: 16px; flex: none; }
+  button:disabled { opacity: .45; }
 </style>
 </head>
 <body>
@@ -86,6 +94,12 @@ const SORT_BY = [["trend", "🔥 В тренде"], ["views", "Всего про
 const DELIVERY = [["youtube", "На YouTube"], ["telegram", "Мне в Telegram"], ["both", "Оба"]];
 const PRIVACY = [["scheduled", "Запланировать"], ["public", "Сразу"], ["unlisted", "По ссылке"], ["private", "Приватное"]];
 let state = {};
+// Несохранённые настройки проекта: копятся здесь и отправляются одной кнопкой «Сохранить»
+let draft = {}, draftPid = null;
+const isDirty = () => Object.keys(draft).length > 0;
+// что показывать целиком: списки «План» и «История» свёрнуты до 3 строк
+const showAll = { slots: false, uploads: false };
+const FOLD = 3;
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmtViews = n => n == null ? "" : n >= 1e6 ? (n / 1e6).toFixed(1).replace(".0", "") + "M"
@@ -135,8 +149,14 @@ async function guarded(fn) {
 }
 
 // ---------- роутинг ----------
-function route() {
+async function route() {
   clearTimeout(cutPoll);
+  if (isDirty() && location.hash !== "#p" + draftPid) {
+    if (!await confirmMsg("Есть несохранённые настройки. Выйти без сохранения?")) {
+      location.hash = "#p" + draftPid; return;
+    }
+    draft = {}; updateSaveUI();
+  }
   const m = location.hash.match(/^#p(\d+)/), c = location.hash.match(/^#cut(\d*)/);
   if (m) { tg?.BackButton.show(); showProject(+m[1]); }
   else if (c) { tg?.BackButton.show(); showCut(c[1] ? +c[1] : null); }
@@ -245,21 +265,24 @@ async function createProject() {
 async function showProject(id, data) {
   data = data || await guarded(() => api("GET", `/api/projects/${id}`));
   if (!data) return;
+  if (draftPid !== id) { draft = {}; draftPid = id; showAll.slots = showAll.uploads = false; }
   state = data;
-  const p = data.project;
+  const P = data.project;                 // как сохранено на сервере
+  const p = { ...P, ...draft };           // как сейчас на экране (с несохранёнными правками)
   const e = p.effects;
+  const drafted = (k, saved) => k in draft ? esc(draft[k]) : saved;
   $root.innerHTML = `
     <div class="card"><div class="row">
-      <input class="grow" id="name" value="${esc(p.name)}" onchange="patch({name:this.value})" style="font-weight:600;font-size:17px">
+      <input class="grow" id="name" value="${esc(p.name)}" oninput="stage({name:this.value}, false)" style="font-weight:600;font-size:17px">
       <label class="switch" title="Включён"><input type="checkbox" ${p.enabled ? "checked" : ""}
-        onchange="patch({enabled:this.checked})"><span></span></label></div>
+        onchange="stage({enabled:this.checked})"><span></span></label></div>
       <div class="hint" style="padding-bottom:10px">${p.enabled ? "Работает по расписанию" : "На паузе — автоматически не заливает"}
         · всего перезалито: ${data.total_uploaded}</div></div>
 
     <h2>Куда отправлять готовые видео</h2>
     <div class="card">
       <div class="row"><div class="seg">${DELIVERY.map(([k, v]) =>
-        `<button class="${p.delivery === k ? "on" : ""}" onclick="patch({delivery:'${k}'})">${v}</button>`).join("")}</div></div>
+        `<button class="${p.delivery === k ? "on" : ""}" onclick="stage({delivery:'${k}'})">${v}</button>`).join("")}</div></div>
     </div>
     <div class="hint">${{
       youtube: "Бот сам публикует обработанное видео на твой канал.",
@@ -287,19 +310,19 @@ async function showProject(id, data) {
       <div class="row"><input id="srcUrl" class="grow" placeholder="YouTube или TikTok: https://…/@канал">
         <button onclick="addSource()">Добавить</button></div>
       <div class="row"><div class="seg">
-        <button class="${p.strategy === "rotate" ? "on" : ""}" onclick="patch({strategy:'rotate'})">Каналы по очереди</button>
-        <button class="${p.strategy === "top" ? "on" : ""}" onclick="patch({strategy:'top'})">Общий топ</button></div></div>
+        <button class="${p.strategy === "rotate" ? "on" : ""}" onclick="stage({strategy:'rotate'})">Каналы по очереди</button>
+        <button class="${p.strategy === "top" ? "on" : ""}" onclick="stage({strategy:'top'})">Общий топ</button></div></div>
     </div>
     <div class="hint">Можно вставить несколько ссылок через пробел. Если TikTok-аккаунт не читается — вставь ссылку на любое его видео.</div>
 
     <h2>Какие видео брать</h2>
     <div class="card">
       <div class="row"><div class="seg">${SORT_BY.map(([k, v]) =>
-        `<button class="${p.sort_by === k ? "on" : ""}" onclick="patch({sort_by:'${k}'})">${v}</button>`).join("")}</div></div>
+        `<button class="${p.sort_by === k ? "on" : ""}" onclick="stage({sort_by:'${k}'})">${v}</button>`).join("")}</div></div>
       <div class="row"><div class="grow">Не старше, дней<div class="sub">0 — любые</div></div>
-        <input class="num" type="number" min="0" value="${p.max_age_days}" onchange="patch({max_age_days:+this.value})"></div>
+        <input class="num" type="number" min="0" value="${p.max_age_days}" oninput="stage({max_age_days:+this.value}, false)"></div>
       <div class="row"><div class="grow">Длина ролика, сек<div class="sub">0 — без ограничения</div></div>
-        <input class="num" type="number" min="0" placeholder="от" value="${p.min_duration || ""}" onchange="patch({min_duration:+this.value})">–<input class="num" type="number" min="0" placeholder="до" value="${p.max_duration || ""}" onchange="patch({max_duration:+this.value})"></div>
+        <input class="num" type="number" min="0" placeholder="от" value="${p.min_duration || ""}" oninput="stage({min_duration:+this.value}, false)">–<input class="num" type="number" min="0" placeholder="до" value="${p.max_duration || ""}" oninput="stage({max_duration:+this.value}, false)"></div>
     </div>
     <div class="hint">${{
       trend: "<b>🔥 В тренде:</b> сначала ролики, которые набирают просмотры прямо сейчас (прирост за последние сутки), а когда они закончатся — остальные по числу просмотров. Бот замеряет просмотры каждые 2 часа: точный прирост появится через 3+ часа после запуска, до этого для свежих роликов берутся средние просмотры в день.",
@@ -310,12 +333,12 @@ async function showProject(id, data) {
     <h2>Подгонять длину при заливке</h2>
     <div class="card">
       <div class="row"><div class="seg">${[["off", "Как есть"], ["fixed", "Точно"], ["range", "Диапазон"], ["channel", "Как на канале"]].map(([k, v]) =>
-        `<button class="${p.fit_mode === k ? "on" : ""}" onclick="patch({fit_mode:'${k}'})">${v}</button>`).join("")}</div></div>
+        `<button class="${p.fit_mode === k ? "on" : ""}" onclick="stage({fit_mode:'${k}'})">${v}</button>`).join("")}</div></div>
       ${p.fit_mode === "fixed" ? `<div class="row"><div class="grow">Целевая длина</div>
-        <input class="num" style="width:90px" placeholder="0:45" value="${p.fit_seconds ? fmtDur(p.fit_seconds) : ""}" onchange="patch({fit_seconds:this.value})"></div>` : ""}
+        <input class="num" style="width:90px" placeholder="0:45" value="${drafted("fit_seconds", P.fit_seconds ? fmtDur(P.fit_seconds) : "")}" oninput="stage({fit_seconds:this.value}, false)"></div>` : ""}
       ${p.fit_mode === "range" ? `<div class="row"><div class="grow">Длина от – до</div>
         <input class="num" style="width:120px" placeholder="1:35-2:35"
-          value="${p.fit_max ? fmtDur(p.fit_min) + "-" + fmtDur(p.fit_max) : ""}" onchange="patch({fit_range:this.value})"></div>` : ""}
+          value="${drafted("fit_range", P.fit_max ? fmtDur(P.fit_min) + "-" + fmtDur(P.fit_max) : "")}" oninput="stage({fit_range:this.value}, false)"></div>` : ""}
       ${p.fit_mode === "channel" ? `<div class="row sub">${p.fit_cached ? "Сейчас цель ≈ " + fmtDur(p.fit_cached) + " (обновляется раз в сутки)" : "Цель посчитаю при следующей заливке"}</div>` : ""}
     </div>
     <div class="hint">${{
@@ -328,21 +351,21 @@ async function showProject(id, data) {
     <h2>Расписание</h2>
     <div class="card">
       <div class="row"><div class="seg">
-        <button class="${p.schedule_mode === "auto" ? "on" : ""}" onclick="patch({schedule_mode:'auto'})">Авто (случайно)</button>
-        <button class="${p.schedule_mode === "fixed" ? "on" : ""}" onclick="patch({schedule_mode:'fixed'})">Своё время</button></div></div>
+        <button class="${p.schedule_mode === "auto" ? "on" : ""}" onclick="stage({schedule_mode:'auto'})">Авто (случайно)</button>
+        <button class="${p.schedule_mode === "fixed" ? "on" : ""}" onclick="stage({schedule_mode:'fixed'})">Своё время</button></div></div>
       ${p.schedule_mode === "auto" ? `
         <div class="row"><div class="grow">Роликов в день</div>
-          <input class="num" type="number" min="1" max="20" value="${p.per_day}" onchange="patch({per_day:+this.value})"></div>
+          <input class="num" type="number" min="1" max="20" value="${p.per_day}" oninput="stage({per_day:+this.value}, false)"></div>
         <div class="row"><div class="grow">Окно публикаций</div>
-          <input ${HHMM} value="${p.window_start}" onchange="patch({window_start:fixTime(this.value)})">–<input ${HHMM} value="${p.window_end}" onchange="patch({window_end:fixTime(this.value)})"></div>
+          <input ${HHMM} value="${p.window_start}" oninput="stage({window_start:fixTime(this.value)}, false)">–<input ${HHMM} value="${p.window_end}" oninput="stage({window_end:fixTime(this.value)}, false)"></div>
         <div class="row"><div class="grow">Между роликами, мин</div>
-          <input class="num" type="number" min="1" value="${p.min_gap}" onchange="patch({min_gap:+this.value})">–<input class="num" type="number" min="1" value="${p.max_gap}" onchange="patch({max_gap:+this.value})"></div>
+          <input class="num" type="number" min="1" value="${p.min_gap}" oninput="stage({min_gap:+this.value}, false)">–<input class="num" type="number" min="1" value="${p.max_gap}" oninput="stage({max_gap:+this.value}, false)"></div>
       ` : `
         <div class="row"><div class="chips grow">${p.fixed_times.map(t => `<span class="chip">${t}<button class="x" onclick="delTime('${t}')">×</button></span>`).join("") || `<span class="sub">Добавь время публикаций</span>`}</div></div>
         <div class="row"><div class="grow">Добавить время</div><input ${HHMM} id="newTime" value="15:00"><button onclick="addTime()">+</button></div>
       `}
       ${p.delivery === "telegram" ? "" : `<div class="row"><div class="seg">${PRIVACY.map(([k, v]) =>
-        `<button class="${p.privacy === k ? "on" : ""}" onclick="patch({privacy:'${k}'})">${v}</button>`).join("")}</div></div>`}
+        `<button class="${p.privacy === k ? "on" : ""}" onclick="stage({privacy:'${k}'})">${v}</button>`).join("")}</div></div>`}
     </div>
     <div class="hint">Часовой пояс: ${esc(data.tz)}. ${p.schedule_mode === "auto"
       ? "Каждый день время случайное внутри окна, с промежутком между роликами." : "Каждый день в эти часы."}
@@ -351,13 +374,15 @@ async function showProject(id, data) {
 
     <h2>План</h2>
     <div class="card">
-      ${data.slots.map(s => `<div class="row"><span class="status">${STATUS[s.status] || ""}</span>
+      ${fold(data.slots, "slots", foldStart(data.slots)).map(s => `<div class="row"><span class="status">${STATUS[s.status] || ""}</span>
         <div class="grow"><div class="ellipsis">${s.date === data.today ? "" : s.date.slice(8) + "." + s.date.slice(5, 7) + " "}<b>${s.time}</b>
           ${s.title ? "— " + esc(s.title) : `<span class="sub">— ${s.video_url ? "выбранное видео" : "авто-выбор"}</span>`}</div>
           ${s.info && s.status !== "planned" ? `<div class="sub ellipsis">${s.status === "done" ? `<a href="#" onclick="openLink('${esc(s.info)}');return false">${esc(s.info)}</a>` : esc(s.info)}</div>` : ""}
           ${s.retry ? `<div class="sub">повторная попытка</div>` : ""}</div>
-        ${s.status === "planned" ? `<button class="x" onclick="cancelSlot(${s.id})">×</button>` : ""}</div>`).join("")
-        || `<div class="empty">${p.ready ? (p.enabled ? "На сегодня публикаций нет" : "Проект на паузе") : "Привяжи канал или выбери «Мне в Telegram» — и расписание появится"}</div>`}
+        ${s.status === "planned" ? `<button class="x" onclick="cancelSlot(${s.id})">×</button>` : ""}
+        ${s.upload_id ? `<button class="bin" title="Удалить ролик" onclick="delUpload(${s.upload_id}, true)">🗑</button>` : ""}</div>`).join("")
+        || `<div class="empty">${P.ready ? (P.enabled ? "На сегодня публикаций нет" : "Проект на паузе") : "Привяжи канал или выбери «Мне в Telegram» — и расписание появится"}</div>`}
+      ${foldButton(data.slots, "slots")}
       ${p.ready ? `<div class="row"><button class="wide" onclick="publishAuto()">⚡ Залить сейчас — бот выберет сам</button></div>` : ""}
       ${p.ready && p.enabled ? `<div class="row"><button class="ghost" onclick="replan()">🎲 Перераспределить время на сегодня</button></div>` : ""}
     </div>
@@ -371,29 +396,97 @@ async function showProject(id, data) {
 
     <h2>Уникализация</h2>
     <div class="card">
-      <div class="row"><div class="grow">Увеличение, %</div><input class="num" id="fx_zoom" type="number" step="1" value="${Math.round((e.zoom - 1) * 100)}"></div>
-      <div class="row"><div class="grow">Поворот, °</div><input class="num" id="fx_rot" type="number" step="0.1" value="${e.rotate_deg}"></div>
-      <div class="row"><div class="grow">Осветлить тени, %</div><input class="num" id="fx_sh" type="number" step="1" value="${Math.round(e.shadows * 100)}"></div>
-      <div class="row"><div class="grow">Размытие сверху/снизу, % высоты</div><input class="num" id="fx_bh" type="number" step="1" value="${Math.round(e.edge_blur.height * 100)}"></div>
-      <div class="row"><div class="grow">Сила размытия</div><input class="num" id="fx_bs" type="number" step="1" value="${e.edge_blur.sigma}"></div>
-      <div class="row"><button class="wide" onclick="saveEffects()">Сохранить эффекты</button></div>
+      <div class="row"><div class="grow">Увеличение, %</div><input class="num" id="fx_zoom" oninput="stageFx()" type="number" step="1" value="${Math.round((e.zoom - 1) * 100)}"></div>
+      <div class="row"><div class="grow">Поворот, °</div><input class="num" id="fx_rot" oninput="stageFx()" type="number" step="0.1" value="${e.rotate_deg}"></div>
+      <div class="row"><div class="grow">Осветлить тени, %</div><input class="num" id="fx_sh" oninput="stageFx()" type="number" step="1" value="${Math.round(e.shadows * 100)}"></div>
+      <div class="row"><div class="grow">Размытие сверху/снизу, % высоты</div><input class="num" id="fx_bh" oninput="stageFx()" type="number" step="1" value="${Math.round(e.edge_blur.height * 100)}"></div>
+      <div class="row"><div class="grow">Сила размытия</div><input class="num" id="fx_bs" oninput="stageFx()" type="number" step="1" value="${e.edge_blur.sigma}"></div>
     </div>
 
     <h2>История</h2>
     <div class="card">
-      ${data.uploads.map(u => `<div class="row tap" onclick="openLink('${esc(u.url || u.source)}')"><div class="grow">
+      ${fold(data.uploads, "uploads").map(u => `<div class="row tap" onclick="openLink('${esc(u.url || u.source)}')"><div class="grow">
         <div class="ellipsis">${esc(u.title)}</div><div class="sub">${u.url ? "залит" : "📩 прислан"} ${u.at}${u.views ? " · ориг. 👁 " + fmtViews(u.views) : ""}${u.published ? " · вышел " + fmtDate(u.published) : ""}</div></div>
-        <span class="sub">↗</span></div>`).join("") || `<div class="empty">Пока ничего не залито</div>`}
+        <button class="bin" title="Удалить ролик" onclick="event.stopPropagation();delUpload(${u.id}, ${u.url ? "true" : "false"})">🗑</button></div>`).join("")
+        || `<div class="empty">Пока ничего не залито</div>`}
+      ${foldButton(data.uploads, "uploads")}
     </div>
+    <div class="hint">🗑 — удалить ролик с канала (или только из истории). Удалённый ролик бот заново не перезальёт.</div>
+
+    <div class="card" style="margin-top:24px"><div class="row">
+      <button class="wide" id="saveAllBtn" onmousedown="event.preventDefault()" onclick="saveAll()">💾 Сохранить все настройки</button></div></div>
+    <div class="hint" id="saveHint"></div>
 
     <div style="margin-top:24px"><button class="danger wide" onclick="delProject()">Удалить проект</button></div>`;
+  updateSaveUI();
 }
 
 const pid = () => state.project.id;
 async function reload(data) { await showProject(pid(), data); }
-async function patch(body) {
+const cur = () => ({ ...state.project, ...draft });
+// Правка настройки: только запоминаем. rerender=false — для полей ввода (не сбивать фокус/клавиатуру)
+function stage(body, rerender = true) {
+  Object.assign(draft, body);
+  if (rerender) showProject(pid(), state); else updateSaveUI();
+}
+function stageFx() {
+  const v = id => +document.getElementById(id).value;
+  stage({ effects: { zoom: 1 + v("fx_zoom") / 100, rotate_deg: v("fx_rot"), shadows: v("fx_sh") / 100,
+    edge_blur: { height: v("fx_bh") / 100, sigma: v("fx_bs") } } }, false);
+}
+function updateSaveUI() {
+  const dirty = isDirty() && location.hash === "#p" + draftPid;
+  document.body.classList.toggle("dirty", dirty);
+  let bar = document.getElementById("saveBar");
+  if (!bar) {
+    bar = document.createElement("div"); bar.id = "saveBar"; bar.className = "savebar";
+    bar.innerHTML = `<div class="grow">Есть несохранённые изменения</div>
+      <button class="ghost" onmousedown="event.preventDefault()" onclick="discardDraft()">Отменить</button><button onmousedown="event.preventDefault()" onclick="saveAll()">💾 Сохранить</button>`;
+    document.body.appendChild(bar);
+  }
+  bar.hidden = !dirty;
+  const btn = document.getElementById("saveAllBtn"), hint = document.getElementById("saveHint");
+  if (btn) btn.disabled = !dirty;
+  if (hint) hint.textContent = dirty ? "Изменения применятся только после сохранения." : "Все настройки сохранены.";
+  if (dirty) tg?.enableClosingConfirmation?.(); else tg?.disableClosingConfirmation?.();
+}
+function discardDraft() { draft = {}; showProject(pid(), state); }
+async function saveAll() {
+  if (!isDirty()) return toast("Нечего сохранять");
+  const body = { ...draft };
   const d = await guarded(() => api("PATCH", `/api/projects/${pid()}`, body));
-  if (d) { haptic("success"); reload(d); } else reload();
+  if (!d) return;                       // ошибка показана, правки остаются — можно исправить
+  draft = {}; haptic("success"); toast("Настройки сохранены"); reload(d);
+}
+// Свёртка длинных списков: видно FOLD строк, остальное — по «Показать все»
+function foldStart(slots) {           // в «Плане» показываем ближайшие к «сейчас»
+  const i = slots.findIndex(s => s.status === "planned" || s.status === "running");
+  return i < 0 ? Math.max(0, slots.length - FOLD) : Math.max(0, Math.min(i - 1, slots.length - FOLD));
+}
+function fold(list, key, start = 0) {
+  return showAll[key] || list.length <= FOLD ? list : list.slice(start, start + FOLD);
+}
+function foldButton(list, key) {
+  if (list.length <= FOLD) return "";
+  return `<div class="row"><button class="ghost wide" onclick="showAll.${key}=!showAll.${key};showProject(pid(), state)">${
+    showAll[key] ? "Свернуть" : `Показать все (${list.length})`}</button></div>`;
+}
+function choose(msg, buttons) {       // до 3 кнопок; -> id нажатой или null
+  if (tg?.showPopup) return new Promise(r => tg.showPopup({ message: msg, buttons }, id => r(id || null)));
+  const b = buttons.filter(x => x.type !== "cancel");
+  for (const x of b) if (confirm(msg + "\n\n" + x.text + "?")) return Promise.resolve(x.id);
+  return Promise.resolve(null);
+}
+async function delUpload(id, onYoutube) {
+  const how = onYoutube
+    ? await choose("Удалить этот ролик?", [
+        { id: "yt", type: "destructive", text: "С YouTube и из истории" },
+        { id: "hist", type: "default", text: "Только из истории" },
+        { type: "cancel" }])
+    : (await confirmMsg("Убрать ролик из истории?") ? "hist" : null);
+  if (!how) return;
+  const d = await guarded(() => api("DELETE", `/api/projects/${pid()}/uploads/${id}?youtube=${how === "yt" ? 1 : 0}`));
+  if (d) { haptic("success"); toast(d.note || "Удалено"); reload(d); }
 }
 async function addSource() {
   const url = document.getElementById("srcUrl").value.trim();
@@ -408,10 +501,12 @@ async function delSource(sid) {
 }
 function addTime() {
   const t = fixTime(document.getElementById("newTime").value);
-  if (t) patch({ fixed_times: [...state.project.fixed_times, t] });
+  if (t) stage({ fixed_times: [...new Set([...cur().fixed_times, t])].sort() });
 }
-function delTime(t) { patch({ fixed_times: state.project.fixed_times.filter(x => x !== t) }); }
+function delTime(t) { stage({ fixed_times: cur().fixed_times.filter(x => x !== t) }); }
 async function publishAuto() {
+  if (!await confirmMsg("Залить один ролик прямо сейчас? Бот сам выберет видео по правилам проекта"
+    + (isDirty() ? " (по сохранённым настройкам — несохранённые правки не учитываются)" : "") + ".")) return;
   const r = await guarded(() => api("POST", `/api/projects/${pid()}/publish`, { when: "auto" }));
   if (r) { haptic("success"); toast("Выбираю ролик и заливаю — пришлю в чат"); reload(); }
 }
@@ -451,11 +546,6 @@ async function linkByCode() {
 async function linkChannel() {
   const d = await guarded(() => api("POST", `/api/projects/${pid()}/auth`));
   if (d) { openLink(d.url); toast("После входа вернись сюда и потяни вниз для обновления"); }
-}
-async function saveEffects() {
-  const v = id => +document.getElementById(id).value;
-  await patch({ effects: { zoom: 1 + v("fx_zoom") / 100, rotate_deg: v("fx_rot"), shadows: v("fx_sh") / 100,
-    edge_blur: { height: v("fx_bh") / 100, sigma: v("fx_bs") } } });
 }
 async function delProject() {
   if (!await confirmMsg(`Удалить проект «${state.project.name}»? История заливок тоже удалится.`)) return;

@@ -36,7 +36,8 @@ def _credentials(token_path):
     token_path = Path(token_path)
     if not token_path.exists():
         raise AuthError(f"Нет токена {token_path} — привяжи канал (auth).")
-    creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+    # Скоупы берём из самого токена: привязка по коду выдаёт общий скоуп youtube
+    creds = Credentials.from_authorized_user_file(str(token_path))
     if not creds.valid:
         if not (creds.expired and creds.refresh_token):
             raise AuthError(f"Токен {token_path} невалиден — привяжи канал заново.")

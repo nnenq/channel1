@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
+    user_id INTEGER,
     token_path TEXT,
     channel_id TEXT,
     channel_title TEXT,
@@ -102,6 +103,7 @@ MIGRATIONS = [
     ("projects", "max_age_days", "INTEGER NOT NULL DEFAULT 0"),
     ("uploads", "published", "TEXT"),
     ("projects", "delivery", "TEXT NOT NULL DEFAULT 'youtube'"),
+    ("projects", "user_id", "INTEGER"),
 ]
 
 PROJECT_FIELDS = {
@@ -177,15 +179,29 @@ class DB:
             p["enabled"] = bool(p["enabled"])
         return p
 
-    def projects(self):
-        return [self._decode(p) for p in self.q("SELECT * FROM projects ORDER BY id")]
+    def projects(self, user_id=None):
+        """Все проекты (для планировщика) или проекты одного пользователя."""
+        if user_id is None:
+            return [self._decode(p) for p in self.q("SELECT * FROM projects ORDER BY id")]
+        return [self._decode(p) for p in self.q(
+            "SELECT * FROM projects WHERE user_id = ? ORDER BY id", user_id)]
+
+    def claim_orphan_projects(self, owner_id):
+        """Проекты из версии без пользователей достаются владельцу бота."""
+        self.x("UPDATE projects SET user_id = ? WHERE user_id IS NULL", owner_id)
+
+    def pause_user_projects(self, user_id):
+        self.x("UPDATE projects SET enabled = 0 WHERE user_id = ?", user_id)
+        self.x("""UPDATE slots SET status = 'cancelled', info = 'доступ к боту отозван'
+                  WHERE status = 'planned' AND project_id IN (SELECT id FROM projects WHERE user_id = ?)""",
+               user_id)
 
     def project(self, pid):
         return self._decode(self.one("SELECT * FROM projects WHERE id = ?", pid))
 
-    def create_project(self, name):
-        return self.x("INSERT INTO projects(name, sort_by, created_at) VALUES(?, 'trend', ?)",
-                      name, iso(utcnow()))
+    def create_project(self, name, user_id):
+        return self.x("INSERT INTO projects(name, user_id, sort_by, created_at) VALUES(?, ?, 'trend', ?)",
+                      name, user_id, iso(utcnow()))
 
     def update_project(self, pid, **fields):
         fields = {k: v for k, v in fields.items() if k in PROJECT_FIELDS}

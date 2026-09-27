@@ -11,6 +11,7 @@ class Settings:
     bot_token: str
     owner_id: int | None
     client_secret: str
+    device_client_secret: str
     tz: ZoneInfo
     port: int
     public_url: str
@@ -46,6 +47,7 @@ def load_settings():
         bot_token=token,
         owner_id=int(owner) if owner else None,
         client_secret=os.getenv("GOOGLE_CLIENT_SECRET", "client_secret.json"),
+        device_client_secret=os.getenv("GOOGLE_DEVICE_CLIENT_SECRET", "client_secret_tv.json"),
         tz=ZoneInfo(os.getenv("TIMEZONE", "Europe/Chisinau")),
         port=int(os.getenv("PORT", "8080")),
         public_url=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),

@@ -17,8 +17,64 @@ def _shorts_url(url):
     return url
 
 
+TIKTOK_RE = re.compile(r"tiktok\.com/@([\w.\-]+)", re.I)
+
+
+def is_tiktok(url):
+    return bool(TIKTOK_RE.search(url or ""))
+
+
+def is_youtube_id(video_id):
+    return len(video_id) == 11 and not video_id.isdigit()
+
+
+def _iso_from_ts(ts):
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat() if ts else None
+
+
+def list_tiktok(profile_url, scan_limit=200):
+    """Ролики TikTok-аккаунта с просмотрами, датой и длительностью (через yt-dlp)."""
+    handle = TIKTOK_RE.search(profile_url).group(1)
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": scan_limit}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(f"https://www.tiktok.com/@{handle}", download=False)
+
+    videos = []
+    for e in info.get("entries") or []:
+        if not e or not e.get("id"):
+            continue
+        videos.append({
+            "id": str(e["id"]),
+            "title": e.get("title") or e.get("description") or "",
+            "view_count": e.get("view_count"),
+            "duration": e.get("duration"),
+            "published": _iso_from_ts(e.get("timestamp")),
+            "url": e.get("webpage_url") or f"https://www.tiktok.com/@{handle}/video/{e['id']}",
+            "exact": True,   # TikTok отдаёт точное число просмотров
+        })
+
+    # Если в списке нет просмотров/дат — дочитываем первые ролики по одному
+    missing = [v for v in videos if v["view_count"] is None or not v["published"]][:40]
+    if missing:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            for v in missing:
+                try:
+                    full = ydl.extract_info(v["url"], download=False)
+                except yt_dlp.utils.DownloadError:
+                    continue
+                v["view_count"] = full.get("view_count", v["view_count"])
+                v["duration"] = full.get("duration") or v["duration"]
+                v["published"] = v["published"] or _iso_from_ts(full.get("timestamp"))
+                v["title"] = v["title"] or full.get("title") or ""
+    add_age(videos)
+    videos.sort(key=lambda v: v["view_count"] or 0, reverse=True)
+    return videos
+
+
 def list_shorts(channel_url, scan_limit=200):
-    """Возвращает шортсы канала, отсортированные по просмотрам (по убыванию)."""
+    """Возвращает шортсы канала (YouTube или TikTok), отсортированные по просмотрам."""
+    if is_tiktok(channel_url):
+        return list_tiktok(channel_url, scan_limit)
     opts = {
         "quiet": True,
         "no_warnings": True,
@@ -73,8 +129,9 @@ def enrich(videos, youtube=None, limit=60):
     Добавляемые ключи: published (ISO), age_days, views_per_day, duration (сек).
     """
     if youtube is not None:
-        for i in range(0, len(videos), 50):
-            batch = videos[i:i + 50]
+        yt_videos = [v for v in videos if is_youtube_id(v["id"])]
+        for i in range(0, len(yt_videos), 50):
+            batch = yt_videos[i:i + 50]
             resp = youtube.videos().list(
                 part="snippet,statistics,contentDetails", id=",".join(v["id"] for v in batch), maxResults=50
             ).execute()
@@ -109,6 +166,12 @@ def enrich(videos, youtube=None, limit=60):
                     v["view_count"] = info["view_count"]
                 v["duration"] = info.get("duration") or v.get("duration")
 
+    add_age(videos)
+    return videos
+
+
+def add_age(videos):
+    """age_days и views_per_day по дате выхода."""
     now = datetime.now(timezone.utc)
     for v in videos:
         if v.get("published"):

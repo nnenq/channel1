@@ -237,17 +237,20 @@ async function showProject(id, data) {
     <div class="card">
       ${p.linked ? `<div class="row"><div class="grow"><b>${esc(p.channel_title)}</b>
           <div class="sub"><a href="#" onclick="openLink('https://youtube.com/channel/${esc(p.channel_id)}');return false">открыть канал</a></div></div>
-          <button class="ghost" onclick="linkChannel()">Сменить</button></div>`
-        : `<div class="row"><div class="grow">Канал не привязан</div><button onclick="linkChannel()">Привязать канал</button></div>`}
+          <button class="ghost" onclick="${data.device_login ? "linkByCode()" : "linkChannel()"}">Сменить</button></div>`
+        : `<div class="row"><div class="grow">Канал не привязан</div><button onclick="${data.device_login ? "linkByCode()" : "linkChannel()"}">Привязать канал</button></div>`}
+      <div id="linkBox">${data.linking ? codeBox(data.linking) : ""}</div>
     </div>
-    <div class="hint">Вход в Google открывается в браузере — делай это <b>на компьютере, где запущен бот</b> (в Telegram Desktop). Выбери именно канал для перезалива.</div>`}
+    <div class="hint">${data.device_login
+      ? `Вход по коду работает с любого телефона или компьютера. <a href="#" onclick="linkChannel();return false">Войти в браузере на компьютере с ботом</a>.`
+      : "Вход в Google открывается в браузере — делай это <b>на компьютере, где запущен бот</b> (в Telegram Desktop)."} Выбери именно канал для перезалива.</div>`}
 
-    <h2>Откуда брать — твои каналы</h2>
+    <h2>Откуда брать — твои каналы (YouTube / TikTok)</h2>
     <div class="card">
       ${data.sources.map(s => `<div class="row"><div class="grow ellipsis">
-          <a href="#" onclick="openLink('${esc(s.url)}/shorts');return false">${esc(s.label)}</a></div>
+          <a href="#" onclick="openLink('${esc(s.url)}${s.url.includes('tiktok.com') ? '' : '/shorts'}');return false">${esc(s.label)}</a></div>
           <button class="x" onclick="delSource(${s.id})">×</button></div>`).join("")}
-      <div class="row"><input id="srcUrl" class="grow" placeholder="https://www.youtube.com/@канал">
+      <div class="row"><input id="srcUrl" class="grow" placeholder="YouTube или TikTok: https://…/@канал">
         <button onclick="addSource()">Добавить</button></div>
       <div class="row"><div class="seg">
         <button class="${p.strategy === "rotate" ? "on" : ""}" onclick="patch({strategy:'rotate'})">Каналы по очереди</button>
@@ -306,7 +309,7 @@ async function showProject(id, data) {
 
     <h2>Выбрать видео вручную</h2>
     <div class="card">
-      <div class="row"><input id="vidUrl" class="grow" placeholder="Ссылка на шортс"><button onclick="publishPrompt(document.getElementById('vidUrl').value)">Залить…</button></div>
+      <div class="row"><input id="vidUrl" class="grow" placeholder="Ссылка на шортс или TikTok-видео"><button onclick="publishPrompt(document.getElementById('vidUrl').value)">Залить…</button></div>
       <div id="top"><div class="row"><button class="ghost" onclick="loadTop()">🔥 Показать топ видео с каналов</button></div></div>
     </div>
     <div id="schedBox"></div>
@@ -360,6 +363,31 @@ async function replan() {
 async function cancelSlot(sid) {
   const d = await guarded(() => api("DELETE", `/api/projects/${pid()}/slots/${sid}`));
   if (d) reload(d);
+}
+function codeBox(d) {
+  return `<div class="row" style="flex-direction:column;align-items:stretch;gap:8px;text-align:center">
+      <div class="sub">Открой ссылку, войди в Google, выбери канал и введи код:</div>
+      <div style="font-size:28px;font-weight:700;letter-spacing:3px;font-variant-numeric:tabular-nums"
+        onclick="navigator.clipboard?.writeText('${esc(d.code)}').then(() => toast('Код скопирован'))">${esc(d.code)}</div>
+      <button onclick="openLink('${esc(d.url)}')">Открыть ${esc(d.url.replace(/^https?:\/\//, ""))}</button>
+      <div class="sub"><span class="spin"></span> жду, пока введёшь код…</div></div>`;
+}
+let linkPoll = null;
+async function linkByCode() {
+  const d = await guarded(() => api("POST", `/api/projects/${pid()}/auth-device`));
+  if (!d) return;
+  document.getElementById("linkBox").innerHTML = codeBox(d);
+  const id = pid(), was = state.project.channel_id;
+  clearInterval(linkPoll);
+  linkPoll = setInterval(async () => {
+    if (location.hash !== "#p" + id) return clearInterval(linkPoll);
+    const r = await api("GET", `/api/projects/${id}`).catch(() => null);
+    if (r && (r.project.channel_id !== was && r.project.linked || !r.linking)) {
+      clearInterval(linkPoll);
+      if (r.project.channel_id !== was) { haptic("success"); toast("Канал привязан: " + r.project.channel_title); }
+      showProject(id, r);
+    }
+  }, 4000);
 }
 async function linkChannel() {
   const d = await guarded(() => api("POST", `/api/projects/${pid()}/auth`));

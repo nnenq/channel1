@@ -68,8 +68,13 @@ class BotApp:
         ids = [self.owner_id] if self.owner_id else []
         return ids + [u for u in self.db.allowed_ids() if u != self.owner_id]
 
-    async def notify_text(self, text, buttons=None):
-        for uid in self.recipients():
+    def project_user(self, project):
+        return project.get("user_id") or self.owner_id
+
+    async def notify_text(self, text, buttons=None, project=None):
+        """Уведомление хозяину проекта (без проекта — владельцу бота)."""
+        uid = self.project_user(project) if project else self.owner_id
+        if uid:
             await self.tg.send(uid, text, buttons)
 
     # ----- доступ -----
@@ -83,6 +88,7 @@ class BotApp:
         await self.tg.send(self.owner_id, f"👤 {who} теперь имеет доступ{via}.")
 
     async def revoke(self, uid, block=False):
+        self.db.pause_user_projects(uid)
         if block:
             self.db.set_user(uid, "blocked")
         else:
@@ -117,7 +123,7 @@ class BotApp:
             + (f"запланировано на YouTube — выйдет в {result.extra['publish_at'].astimezone(self.s.tz):%H:%M}"
                if result.extra.get("publish_at")
                else f"залито ({PRIVACY_RU.get(project['privacy'], project['privacy'])})") + "\n"
-            f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}\n{result.info}")
+            f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}\n{result.info}", project=project)
 
     async def video(self, project, result):
         """Обработанное видео — всем, у кого есть доступ, с текстом для ручной публикации."""
@@ -125,18 +131,17 @@ class BotApp:
         caption = (f"🎬 <b>{esc(project['name'])}</b>: готово к публикации (уже обработано)\n"
                    f"{esc(result.title)}\nОригинал: {fmt.original_line(e, self.s.tz)}\n{e['source_url']}")
         try:
-            for uid in self.recipients():
-                await self.tg.send_video(uid, e["file"], caption)
+            await self.tg.send_video(self.project_user(project), e["file"], caption)
         except Exception as err:  # noqa: BLE001
             await self.notify_text(f"❌ <b>{esc(project['name'])}</b>: не смог отправить видео в Telegram: "
-                                   f"<code>{esc(err)}</code>")
+                                   f"<code>{esc(err)}</code>", project=project)
             return
         tags = " ".join("#" + t.replace(" ", "") for t in e.get("tags") or [])
         await self.notify_text(
             "📋 Текст для публикации (нажми, чтобы скопировать):\n\n"
             f"<b>Название:</b>\n<code>{esc(result.title)}</code>\n\n"
             + (f"<b>Описание:</b>\n<code>{esc(e.get('description'))[:3000]}</code>\n\n" if e.get("description") else "")
-            + (f"<b>Теги:</b>\n<code>{esc(tags)}</code>" if tags else ""))
+            + (f"<b>Теги:</b>\n<code>{esc(tags)}</code>" if tags else ""), project=project)
 
     async def failed(self, project, result, retry_at):
         tail = f"\nПопробую ещё раз в {retry_at:%H:%M}." if retry_at else ""
@@ -146,12 +151,12 @@ class BotApp:
         btn = self.app_button("⚙️ Открыть проект", f"#p{project['id']}")
         await self.notify_text(
             f"❌ <b>{esc(project['name'])}</b>: не получилось залить{what}\n"
-            f"<code>{esc(result.info)[:700]}</code>{tail}", [[btn]] if btn else None)
+            f"<code>{esc(result.info)[:700]}</code>{tail}", [[btn]] if btn else None, project=project)
 
     async def skipped(self, project, slot):
         await self.notify_text(
             f"⏭ <b>{esc(project['name'])}</b>: пропущена публикация на "
-            f"{describe_slot(slot, self.s.tz, datetime.now(self.s.tz).date())} — бот был выключен.")
+            f"{describe_slot(slot, self.s.tz, datetime.now(self.s.tz).date())} — бот был выключен.", project=project)
 
     async def exhausted(self, project):
         rows = []
@@ -170,7 +175,7 @@ class BotApp:
             f"• ➕ добавить или заменить каналы-источники;\n"
             f"• ⏳ ждать — как только на каналах появятся новые шортсы, продолжу сам."
             + (f"\n\nСейчас стоит фильтр «не старше {project['max_age_days']} дн.» — "
-               f"его можно увеличить в панели." if project["max_age_days"] else ""), rows)
+               f"его можно увеличить в панели." if project["max_age_days"] else ""), rows, project=project)
 
     # ----- входящие сообщения -----
     async def handle(self, update):
@@ -187,6 +192,7 @@ class BotApp:
 
         if not self.owner_id and text.startswith("/start"):
             self.db.set_meta("owner_id", user["id"])
+            self.db.claim_orphan_projects(user["id"])
             log.info("владелец бота: %s (%s)", user.get("username"), user["id"])
             await self.set_menu_button(user["id"])
         if not self.has_access(user["id"]):
@@ -215,13 +221,13 @@ class BotApp:
             if not btn:
                 await self.tg.send(chat, "⚠️ Панель пока недоступна: нет HTTPS-адреса (см. окно бота).")
         elif text.startswith("/status"):
-            await self.tg.send(chat, self.status_text())
+            await self.tg.send(chat, self.status_text(user["id"]))
 
-    def status_text(self):
+    def status_text(self, uid):
         today = datetime.now(self.s.tz).date()
         icons = {"planned": "🕒", "running": "⏳", "done": "✅", "failed": "❌", "skipped": "⏭"}
         lines = []
-        for p in self.db.projects():
+        for p in self.db.projects(uid):
             head = f"<b>{esc(p['name'])}</b> → {esc(p['channel_title'] or 'канал не привязан')}"
             if not p["enabled"]:
                 head += " (пауза)"
@@ -271,7 +277,7 @@ class BotApp:
         elif data.startswith("rp:"):
             _, pid, vid = data.split(":", 2)
             p = self.db.project(int(pid))
-            if p:
+            if p and self.project_user(p) == user.get("id"):
                 now = datetime.now(self.s.tz)
                 self.db.add_slot(p["id"], now.date().isoformat(), iso(utcnow()), "manual",
                                  f"https://www.youtube.com/shorts/{vid}")
@@ -360,6 +366,8 @@ async def main():
         me = await tg.call("getMe")
         bot = BotApp(db, s, tg)
         bot.username = me["username"]
+        if bot.owner_id:
+            db.claim_orphan_projects(bot.owner_id)
         sched = Scheduler(db, s, bot)
         bot.sched = sched
 
@@ -386,7 +394,7 @@ async def main():
         print(f"\n  Бот @{me['username']} запущен. Напиши ему /start в Telegram.\n"
               f"  Не закрывай это окно, пока нужны заливки.\n", flush=True)
         if bot.owner_id:
-            await bot.tg.send(bot.owner_id, "🟢 Бот запущен.\n" + bot.status_text(),
+            await bot.tg.send(bot.owner_id, "🟢 Бот запущен.\n" + bot.status_text(bot.owner_id),
                               [[bot.app_button()]] if bot.app_button() else None)
         try:
             await asyncio.gather(tg.poll(bot.handle), sched.loop())

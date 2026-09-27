@@ -22,14 +22,19 @@ CHANNEL_RE = re.compile(
     re.I,
 )
 VIDEO_RE = re.compile(r"(?:youtube\.com/(?:shorts/|watch\?v=)|youtu\.be/)([\w-]{11})")
+TIKTOK_CHANNEL_RE = re.compile(r"^(?:https?://)?(?:www\.|m\.)?tiktok\.com/@([\w.\-]+)", re.I)
+TIKTOK_VIDEO_RE = re.compile(r"tiktok\.com/@([\w.\-]+)/video/(\d+)", re.I)
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 PRIVACY = {"public", "unlisted", "private", "scheduled"}
 TOP_CACHE_TTL = 20 * 60
 
 
 def normalize_channel(url):
-    """Ссылка на канал -> https://www.youtube.com/@handle (или /channel/UC...)."""
+    """Ссылка на канал -> https://www.youtube.com/@handle (/channel/UC...) или https://www.tiktok.com/@handle."""
     url = url.strip()
+    m = TIKTOK_CHANNEL_RE.match(url)
+    if m:
+        return "https://www.tiktok.com/@" + m.group(1)
     if url.startswith("@"):
         url = "https://www.youtube.com/" + url
     m = CHANNEL_RE.match(url)
@@ -39,6 +44,8 @@ def normalize_channel(url):
 
 
 def channel_label(url):
+    if "tiktok.com/" in url:
+        return "TikTok " + url.rsplit("tiktok.com/", 1)[-1]
     return url.rsplit("youtube.com/", 1)[-1]
 
 
@@ -69,6 +76,7 @@ class WebApp:
         self.bot = bot            # BotApp: owner_id, notify_text, public_url
         self.pending_oauth = {}   # state -> (flow, project_id, created)
         self.top_cache = {}       # channel url -> (time, videos)
+        self.device_pending = {}  # project id -> {code, url, until} — привязка по коду в процессе
 
     # ---------- сборка приложения ----------
     def build(self):
@@ -88,6 +96,7 @@ class WebApp:
         r.add_post("/api/projects/{pid}/replan", self.replan)
         r.add_delete("/api/projects/{pid}/slots/{sid}", self.cancel_slot)
         r.add_post("/api/projects/{pid}/auth", self.start_oauth)
+        r.add_post("/api/projects/{pid}/auth-device", self.start_device_link)
         r.add_get("/api/access", self.access_list)
         r.add_post("/api/access/invite", self.access_invite)
         r.add_post("/api/access/{uid}", self.access_change)
@@ -112,7 +121,7 @@ class WebApp:
         try:
             return await handler(request)
         except ApiError as e:
-            return web.json_response({"error": str(e)}, status=400)
+            return web.json_response({"error": str(e)}, status=e.status)
 
     # ---------- страницы ----------
     async def root(self, request):
@@ -129,9 +138,10 @@ class WebApp:
 
     # ---------- хелперы ----------
     def _project(self, request):
+        """Проект из URL — только если он принадлежит тому, кто спрашивает."""
         p = self.db.project(int(request.match_info["pid"]))
-        if not p:
-            raise web.HTTPNotFound()
+        if not p or p["user_id"] != request["user"]["id"]:
+            raise ApiError("Проект не найден.", status=404)
         return p
 
     def _local(self, s):
@@ -164,7 +174,7 @@ class WebApp:
     async def list_projects(self, request):
         now = datetime.now(self.s.tz)
         return web.json_response({
-            "projects": [self._summary(p) for p in self.db.projects()],
+            "projects": [self._summary(p) for p in self.db.projects(request["user"]["id"])],
             "tz": str(self.s.tz), "now": now.strftime("%H:%M"),
             "is_owner": request["user"].get("id") == self.bot.owner_id,
         })
@@ -172,7 +182,7 @@ class WebApp:
     async def create_project(self, request):
         body = await request.json()
         name = (body.get("name") or "").strip()[:60] or "Новый проект"
-        pid = self.db.create_project(name)
+        pid = self.db.create_project(name, request["user"]["id"])
         return web.json_response({"id": pid})
 
     async def get_project(self, request):
@@ -199,6 +209,8 @@ class WebApp:
             "slots": [self._slot_json(s) for s in slots],
             "uploads": uploads,
             "total_uploaded": len(self.db.uploaded_ids(p["id"])),
+            "device_login": Path(self.s.device_client_secret).exists(),
+            "linking": (lambda d: d if d and d["until"] > time.time() else None)(self.device_pending.get(p["id"])),
             "today": now.date().isoformat(), "now": now.strftime("%Y-%m-%dT%H:%M"),
             "tz": str(self.s.tz),
         })
@@ -282,7 +294,7 @@ class WebApp:
             raise ApiError("Вставь ссылку на канал.")
         bad = [u for u in urls if not normalize_channel(u)]
         if bad:
-            raise ApiError(f"Это не ссылка на YouTube-канал: {bad[0]}")
+            raise ApiError(f"Это не ссылка на YouTube-канал или TikTok-аккаунт: {bad[0]}")
         for u in urls:
             self.db.add_source(p["id"], normalize_channel(u))
         if p["exhausted_on"]:
@@ -344,10 +356,14 @@ class WebApp:
         if needs_youtube(p) and not p["token_path"]:
             raise ApiError("Сначала привяжи канал для перезалива — или выбери «Мне в Telegram».")
         body = await request.json()
-        m = VIDEO_RE.search(body.get("video_url", ""))
-        if not m:
-            raise ApiError("Нужна ссылка на видео YouTube.")
-        url = f"https://www.youtube.com/shorts/{m.group(1)}"
+        raw = body.get("video_url", "")
+        m, tt = VIDEO_RE.search(raw), TIKTOK_VIDEO_RE.search(raw)
+        if m:
+            url = f"https://www.youtube.com/shorts/{m.group(1)}"
+        elif tt:
+            url = f"https://www.tiktok.com/@{tt.group(1)}/video/{tt.group(2)}"
+        else:
+            raise ApiError("Нужна ссылка на видео YouTube или TikTok.")
         title = (body.get("title") or "")[:200] or None
         when = body.get("when", "now")
         now = datetime.now(self.s.tz)
@@ -434,8 +450,6 @@ class WebApp:
         return web.json_response({"url": url})
 
     async def oauth_callback(self, request):
-        from ..uploader import my_channel, youtube_client
-
         state = request.query.get("state", "")
         pending = self.pending_oauth.pop(state, None)
         if "error" in request.query or not pending:
@@ -444,25 +458,79 @@ class WebApp:
         loop = asyncio.get_running_loop()
         try:
             await loop.run_in_executor(None, lambda: flow.fetch_token(code=request.query["code"]))
-            self.s.tokens_dir.mkdir(parents=True, exist_ok=True)
-            token_path = self.s.tokens_dir / f"project_{pid}.json"
-            token_path.write_text(flow.credentials.to_json(), encoding="utf-8")
-            ch_id, ch_title = await loop.run_in_executor(
-                None, lambda: my_channel(youtube_client(token_path)))
         except Exception as e:  # noqa: BLE001
             return _page("Ошибка", f"Google вернул ошибку: {esc(e)}")
+        ok, text = await self._finish_link(pid, flow.credentials.to_json())
+        return _page("Готово ✅" if ok else "Ошибка", text + (" Можно закрыть вкладку и вернуться в Telegram." if ok else ""))
+
+    async def _finish_link(self, pid, token_text):
+        """Сохраняет токен, узнаёт канал и включает проекту расписание. -> (ok, текст)."""
+        from ..uploader import my_channel, youtube_client
+
+        loop = asyncio.get_running_loop()
+        self.s.tokens_dir.mkdir(parents=True, exist_ok=True)
+        token_path = self.s.tokens_dir / f"project_{pid}.json"
+        tmp = token_path.with_suffix(".new")
+        tmp.write_text(token_text, encoding="utf-8")
+        try:
+            ch_id, ch_title = await loop.run_in_executor(None, lambda: my_channel(youtube_client(tmp)))
+        except Exception as e:  # noqa: BLE001
+            tmp.unlink(missing_ok=True)
+            text = f"Google вернул ошибку: {esc(e)}"
+            if "has not been used" in str(e) or "accessNotConfigured" in str(e):
+                text = "В Google Cloud не включён YouTube Data API v3 — включи его и привяжи канал ещё раз."
+            return False, text
         if not ch_id:
-            return _page("Нет канала", "У выбранного Google-аккаунта нет YouTube-канала.")
+            tmp.unlink(missing_ok=True)
+            return False, "У выбранного Google-аккаунта нет YouTube-канала."
+        tmp.replace(token_path)
         self.db.update_project(pid, token_path=str(token_path), channel_id=ch_id, channel_title=ch_title)
         project = self.db.project(pid)
         self.sched.plan_day(project, force=True)
         await self.bot.notify_text(f"🔗 Проект <b>{esc(project['name'])}</b>: канал для перезалива — "
-                                   f"<b>{esc(ch_title)}</b>")
-        return _page("Готово ✅", f"Канал <b>{esc(ch_title)}</b> привязан. Можно закрыть вкладку и вернуться в Telegram.")
+                                   f"<b>{esc(ch_title)}</b>", project=project)
+        return True, f"Канал <b>{esc(ch_title)}</b> привязан."
+
+    async def start_device_link(self, request):
+        """Привязка по коду: возвращает код для google.com/device и ждёт ввода в фоне."""
+        import aiohttp
+
+        from . import google_device
+
+        p = self._project(request)
+        if not Path(self.s.device_client_secret).exists():
+            raise ApiError(f"Нет файла {self.s.device_client_secret} — см. README, раздел про вход по коду.")
+        client_id, client_secret = google_device.load_client(self.s.device_client_secret)
+        async with aiohttp.ClientSession() as session:
+            try:
+                d = await google_device.start(session, client_id)
+            except Exception as e:  # noqa: BLE001
+                raise ApiError(f"Google: {e}") from None
+        info = {"code": d["user_code"], "url": d.get("verification_url") or d.get("verification_uri"),
+                "until": time.time() + int(d["expires_in"])}
+        self.device_pending[p["id"]] = info
+
+        async def wait():
+            async with aiohttp.ClientSession() as session:
+                try:
+                    token = await google_device.wait_token(session, client_id, client_secret, d["device_code"],
+                                                           int(d.get("interval", 5)), int(d["expires_in"]))
+                    ok, text = await self._finish_link(p["id"], google_device.token_json(token, client_id, client_secret))
+                except Exception as e:  # noqa: BLE001
+                    ok, text = False, str(e)
+            self.device_pending.pop(p["id"], None)
+            if not ok:
+                await self.bot.notify_text(f"❌ Проект <b>{esc(p['name'])}</b>: канал не привязан — {text}",
+                                           project=p)
+
+        asyncio.create_task(wait())
+        return web.json_response(info)
 
 
 class ApiError(Exception):
-    pass
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
 
 
 def _int(v, lo, hi, name):

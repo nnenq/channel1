@@ -53,6 +53,19 @@ class TG:
             raise RuntimeError(f"Telegram sendVideo: {data.get('description')}")
         return data["result"]
 
+    async def send_document(self, chat_id, path, caption):
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("caption", caption[:1024])
+        with open(path, "rb") as f:
+            form.add_field("document", f, filename="cover.jpg", content_type="image/jpeg")
+            async with self.session.post(self.base + "sendDocument", data=form,
+                                         timeout=aiohttp.ClientTimeout(total=90)) as r:
+                data = await r.json()
+        if not data.get("ok"):
+            raise RuntimeError("Telegram: не удалось отправить обложку")
+        return data["result"]
+
     async def poll(self, handler):
         offset = None
         while True:

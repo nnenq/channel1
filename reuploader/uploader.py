@@ -93,3 +93,9 @@ def upload(youtube, path, title, description, tags, privacy, category_id, made_f
         if status:
             print(f"    загрузка {int(status.progress() * 100)}%", flush=True)
     return response["id"]
+
+
+def set_thumbnail(youtube, video_id, path):
+    """Separate from upload: a rejected thumbnail must never trigger a video reupload."""
+    media = MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False)
+    return youtube.thumbnails().set(videoId=video_id, media_body=media).execute()

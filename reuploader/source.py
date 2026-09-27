@@ -263,7 +263,7 @@ def add_age(videos):
     return videos
 
 
-def download(video_url, out_dir):
+def download(video_url, out_dir, preview=False):
     """Скачивает видео в лучшем качестве, возвращает (путь, метаданные)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -275,6 +275,10 @@ def download(video_url, out_dir):
         "outtmpl": str(out_dir / "%(id)s.src.%(ext)s"),
         "ffmpeg_location": ffmpeg_exe(),
     }
+    if preview:
+        opts.update(format="bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/b",
+                    max_filesize=512 * 1024 * 1024, socket_timeout=20, retries=2,
+                    fragment_retries=2, noplaylist=True)
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(video_url, download=True)
         path = Path(ydl.prepare_filename(info)).with_suffix(".mp4")

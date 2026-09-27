@@ -369,6 +369,15 @@ async function showProject(id, data) {
     </div>
     <div id="schedBox"></div>
 
+    <h2>Обложки · бесплатно</h2>
+    <div class="card"><div class="row"><span class="grow">Для автоматических публикаций</span>
+      <select aria-label="Автообложки" onchange="patch({cover_mode:this.value})">
+        <option value="off" ${p.cover_mode === 'off' ? 'selected' : ''}>Выключены</option>
+        <option value="auto" ${p.cover_mode === 'auto' ? 'selected' : ''}>Кадр + надпись</option>
+      </select></div><div class="row"><span class="grow">Стиль канала</span>
+      <select aria-label="Стиль обложек" onchange="patch({cover_style:this.value})">
+        ${[['lemon','Лимон'],['ocean','Океан'],['coral','Коралл']].map(([k,v]) => `<option value="${k}" ${p.cover_style === k ? 'selected' : ''}>${v}</option>`).join('')}
+      </select></div><div class="hint" style="padding-bottom:12px">Кадр из видео и короткая надпись из названия. Без AI-токенов. При ручном выборе ролика можно выбрать обложку или загрузить свою.</div></div>
     <h2>Уникализация</h2>
     <div class="card">
       <div class="row"><div class="grow">Увеличение, %</div><input class="num" id="fx_zoom" type="number" step="1" value="${Math.round((e.zoom - 1) * 100)}"></div>
@@ -503,40 +512,8 @@ function renderTop() {
 }
 
 function publishPrompt(url, vid) {
-  if (!url) return alertMsg("Вставь ссылку на видео.");
-  const title = vid && window._top?.[vid]?.title || "";
-  const run = when => guarded(async () => {
-    const r = await api("POST", `/api/projects/${pid()}/publish`, { video_url: url, title, when });
-    haptic("success");
-    toast(when === "now" ? "Обрабатываю сейчас — пришлю результат в чат" : "Запланировано на " + r.at);
-    reload();
-  });
-  const choose = id => {
-    if (id === "now") run("now");
-    else if (id === "next") run("next");
-    else if (id === "at") askTime(run);
-  };
-  if (tg?.showPopup) {
-    tg.showPopup({ title: "Залить видео", message: title || url, buttons: [
-      { id: "now", type: "default", text: "Сейчас" },
-      { id: "next", type: "default", text: "В ближайший слот" },
-      { id: "at", type: "default", text: "На время…" }] }, id => id && choose(id));
-  } else {
-    const a = prompt("now / next / at", "now"); if (a) choose(a);
-  }
+  return openCoverEditor(url, vid);
 }
-function askTime(run) {
-  const box = document.getElementById("schedBox");
-  box.innerHTML = `<h2>Когда опубликовать</h2><div class="card"><div class="row">
-    <input type="datetime-local" id="whenAt" class="grow" value="${state.now}" min="${state.now}">
-    <button id="whenOk">OK</button></div></div>`;
-  box.scrollIntoView({ behavior: "smooth" });
-  document.getElementById("whenOk").onclick = () => {
-    const v = document.getElementById("whenAt").value;
-    if (v) { box.innerHTML = ""; run(v); }
-  };
-}
-
 // ---------- умная обрезка ----------
 let cutPoll = null, cutMeta = null;
 const CUT_STATUS = { uploading: "загрузка", uploaded: "загружено — выбери длину", queued: "в очереди",
@@ -675,5 +652,6 @@ async function runCut(jid) {
 
 route();
 </script>
+<script src="/assets/covers.js"></script>
 </body>
 </html>

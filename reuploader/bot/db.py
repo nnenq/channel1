@@ -137,10 +137,24 @@ CREATE TABLE IF NOT EXISTS view_snapshots (
 );
 CREATE INDEX IF NOT EXISTS snapshots_video ON view_snapshots(video_id, at);
 CREATE INDEX IF NOT EXISTS snapshots_channel ON view_snapshots(channel, at);
+CREATE TABLE IF NOT EXISTS cover_drafts (
+    id TEXT PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    video_url TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'queued',
+    error TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 # Колонки, добавленные после первой версии: (таблица, колонка, определение)
 MIGRATIONS = [
+    ("projects", "cover_mode", "TEXT NOT NULL DEFAULT 'off'"),
+    ("projects", "cover_style", "TEXT NOT NULL DEFAULT 'lemon'"),
+    ("slots", "cover_path", "TEXT"),
+    ("slots", "cover_choice", "TEXT NOT NULL DEFAULT 'project'"),
+    ("slots", "publication_title", "TEXT"),
     ("projects", "sort_by", "TEXT NOT NULL DEFAULT 'views'"),
     ("projects", "max_age_days", "INTEGER NOT NULL DEFAULT 0"),
     ("uploads", "published", "TEXT"),
@@ -161,6 +175,7 @@ MIGRATIONS = [
 ]
 
 PROJECT_FIELDS = {
+    "cover_mode", "cover_style",
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
     "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery", "min_duration", "max_duration",
     "fit_mode", "fit_seconds", "fit_cached", "fit_cached_at", "fit_min", "fit_max",
@@ -324,9 +339,12 @@ class DB:
                          AND (run_at >= ? OR status IN ('planned', 'running'))
                          ORDER BY run_at""", pid, since_iso)
 
-    def add_slot(self, pid, plan_date, run_at_iso, kind="auto", video_url=None, video_title=None, attempt=0):
-        return self.x("""INSERT INTO slots(project_id, plan_date, run_at, kind, video_url, video_title, attempt)
-                         VALUES(?, ?, ?, ?, ?, ?, ?)""", pid, plan_date, run_at_iso, kind, video_url, video_title, attempt)
+    def add_slot(self, pid, plan_date, run_at_iso, kind="auto", video_url=None, video_title=None, attempt=0,
+                 cover_path=None, cover_choice="project", publication_title=None):
+        return self.x("""INSERT INTO slots(project_id, plan_date, run_at, kind, video_url, video_title, attempt,
+                         cover_path, cover_choice, publication_title) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      pid, plan_date, run_at_iso, kind, video_url, video_title, attempt,
+                      cover_path, cover_choice, publication_title)
 
     def slot(self, sid):
         return self.one("SELECT * FROM slots WHERE id = ?", sid)

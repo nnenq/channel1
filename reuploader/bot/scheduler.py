@@ -109,6 +109,11 @@ class Scheduler:
         project = self.db.project(slot["project_id"]) or project
 
         if result.status == "done":
+            if result.extra.get("cover"):
+                try:
+                    await self.notify.cover(project, result)
+                except Exception:
+                    log.exception("Не удалось отправить обложку; видео повторно не загружаем")
             if project["exhausted_on"]:
                 self.db.update_project(project["id"], exhausted_on=None)
             if result.new_id:
@@ -129,7 +134,9 @@ class Scheduler:
                 retry_at = self._retry_time(project, slot)
                 if retry_at:
                     self.db.add_slot(project["id"], slot["plan_date"], iso(retry_at), slot["kind"],
-                                     slot["video_url"], slot.get("video_title"), attempt=1)
+                                     slot["video_url"], slot.get("video_title"), attempt=1,
+                                     cover_path=slot.get("cover_path"), cover_choice=slot.get("cover_choice", "project"),
+                                     publication_title=slot.get("publication_title"))
             await self.notify.failed(project, result, retry_at)
 
     def _retry_time(self, project, slot):

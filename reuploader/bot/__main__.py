@@ -124,7 +124,16 @@ class BotApp:
                if result.extra.get("publish_at")
                else f"залито ({PRIVACY_RU.get(project['privacy'], project['privacy'])})") + "\n"
             f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}"
-            f"{esc(fmt.fit_line(result.extra))}\n{result.info}", project=project)
+            f"{esc(fmt.fit_line(result.extra))}\n{result.info}"
+            + ("\n⚠️ " + esc(result.extra["warning"]) if result.extra.get("warning") else ""), project=project)
+
+    async def cover(self, project, result):
+        caption = "Обложка: " + result.title + "\n"
+        if result.extra.get("cover_status") == "set":
+            caption += "YouTube принял обложку. Отображение в Shorts зависит от площадки."
+        else:
+            caption += "Готовый JPG для ручной установки в YouTube Studio."
+        await self.tg.send_document(self.project_user(project), result.extra["cover"], caption)
 
     async def video(self, project, result):
         """Обработанное видео — всем, у кого есть доступ, с текстом для ручной публикации."""

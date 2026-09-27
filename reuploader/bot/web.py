@@ -97,6 +97,9 @@ class WebApp:
         r.add_delete("/api/projects/{pid}/slots/{sid}", self.cancel_slot)
         r.add_post("/api/projects/{pid}/auth", self.start_oauth)
         r.add_post("/api/projects/{pid}/auth-device", self.start_device_link)
+        from . import cut_api
+
+        cut_api.setup(self, r)
         r.add_get("/api/access", self.access_list)
         r.add_post("/api/access/invite", self.access_invite)
         r.add_post("/api/access/{uid}", self.access_change)

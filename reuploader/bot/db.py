@@ -85,6 +85,27 @@ CREATE TABLE IF NOT EXISTS invites (
     created_at TEXT NOT NULL,
     used_by INTEGER
 );
+-- Задачи умной обрезки. status: uploading | uploaded | queued | running | done | failed
+CREATE TABLE IF NOT EXISTS cut_jobs (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT,
+    progress REAL NOT NULL DEFAULT 0,
+    filename TEXT,
+    size INTEGER NOT NULL DEFAULT 0,
+    src_path TEXT,
+    out_path TEXT,
+    target REAL,
+    target_info TEXT,
+    report TEXT,
+    error TEXT,
+    dl_token TEXT,
+    delete_at TEXT,
+    tg_message_id INTEGER,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
 -- Замеры просмотров роликов каналов-источников: по ним считается прирост "сейчас"
 CREATE TABLE IF NOT EXISTS view_snapshots (
     video_id TEXT NOT NULL,
@@ -326,6 +347,30 @@ class DB:
                 return False
             self.x("UPDATE invites SET used_by = ? WHERE code = ?", uid, code)
             return True
+
+    # --- умная обрезка ---
+    def create_cut_job(self, user_id, filename, size, status="uploading", src_path=None):
+        return self.x("""INSERT INTO cut_jobs(user_id, status, filename, size, src_path, created_at)
+                         VALUES(?, ?, ?, ?, ?, ?)""", user_id, status, filename, size, src_path, iso(utcnow()))
+
+    def cut_job(self, jid):
+        return self.one("SELECT * FROM cut_jobs WHERE id = ?", jid)
+
+    def cut_jobs(self, user_id, limit=10):
+        return self.q("SELECT * FROM cut_jobs WHERE user_id = ? ORDER BY id DESC LIMIT ?", user_id, limit)
+
+    def update_cut_job(self, jid, **fields):
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.x(f"UPDATE cut_jobs SET {cols} WHERE id = ?", *fields.values(), jid)
+
+    def next_cut_job(self):
+        return self.one("SELECT * FROM cut_jobs WHERE status = 'queued' ORDER BY id LIMIT 1")
+
+    def cut_job_by_token(self, token):
+        return self.one("SELECT * FROM cut_jobs WHERE dl_token = ?", token)
+
+    def expired_cut_jobs(self, now_iso):
+        return self.q("SELECT * FROM cut_jobs WHERE delete_at IS NOT NULL AND delete_at <= ?", now_iso)
 
     # --- замеры просмотров ---
     def last_snapshot_at(self, channel):

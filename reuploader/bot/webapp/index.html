@@ -136,8 +136,10 @@ async function guarded(fn) {
 
 // ---------- роутинг ----------
 function route() {
-  const m = location.hash.match(/^#p(\d+)/);
+  clearTimeout(cutPoll);
+  const m = location.hash.match(/^#p(\d+)/), c = location.hash.match(/^#cut(\d*)/);
   if (m) { tg?.BackButton.show(); showProject(+m[1]); }
+  else if (c) { tg?.BackButton.show(); showCut(c[1] ? +c[1] : null); }
   else { tg?.BackButton.hide(); showHome(); }
 }
 tg?.BackButton.onClick(() => { location.hash = ""; });
@@ -160,6 +162,8 @@ async function showHome() {
   $root.innerHTML = `
     <h1>Перезалив Shorts</h1>
     <div class="card">${cards || `<div class="empty">Пока нет проектов.<br>Проект = твои каналы-источники → 1 канал для перезалива.</div>`}</div>
+    <div class="card" style="margin-top:12px"><div class="row tap chev" onclick="location.hash='#cut'">
+      <div class="grow"><b>✂️ Умная обрезка</b><div class="sub">Укоротить видео до нужной длины незаметно для зрителя</div></div></div></div>
     <h2>Новый проект</h2>
     <div class="card"><div class="row">
       <input id="newName" class="grow" placeholder="Название, напр. HappyFlick 2">
@@ -478,6 +482,124 @@ function askTime(run) {
     const v = document.getElementById("whenAt").value;
     if (v) { box.innerHTML = ""; run(v); }
   };
+}
+
+// ---------- умная обрезка ----------
+let cutPoll = null, cutMeta = null;
+const CUT_STATUS = { uploading: "загрузка", uploaded: "загружено — выбери длину", queued: "в очереди",
+  running: "обрабатываю", done: "готово", failed: "ошибка" };
+const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + " МБ" : Math.round(b / 1024) + " КБ";
+const progressBar = f => `<div style="height:8px;background:var(--sep);border-radius:4px;overflow:hidden">
+  <div style="height:100%;width:${Math.round(f * 100)}%;background:var(--accent);transition:width .3s"></div></div>`;
+
+async function showCut(jid) {
+  const d = await guarded(() => api("GET", "/api/cut"));
+  if (!d) return;
+  cutMeta = d;
+  const job = jid ? (d.jobs.find(j => j.id === jid) || await guarded(() => api("GET", `/api/cut/${jid}`))) : null;
+  $root.innerHTML = `
+    <h1>✂️ Умная обрезка</h1>
+    <div class="hint" style="padding:0 4px 8px">Режу только в паузах речи, сохраняю хук в начале и развязку,
+      убираю «воду». Без новой озвучки и переходов. До ${d.max_mb} МБ и ${d.max_minutes} мин.</div>
+    <div id="cutJob">${job ? "" : `<div class="card"><div class="row">
+      <input type="file" id="cutFile" accept="video/*" class="grow"></div>
+      <div class="row"><button class="wide" onclick="startUpload()">Загрузить</button></div></div>`}</div>
+    ${d.jobs.length ? `<h2>Недавние</h2><div class="card">${d.jobs.map(j => `
+      <div class="row tap" onclick="location.hash='#cut${j.id}'"><div class="grow" style="min-width:0">
+        <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
+        <span class="sub">›</span></div>`).join("")}</div>` : ""}`;
+  if (job) renderJob(job);
+}
+
+async function startUpload() {
+  const f = document.getElementById("cutFile").files[0];
+  if (!f) return alertMsg("Выбери видео.");
+  if (f.size > cutMeta.max_mb * 1048576) return alertMsg(`Файл больше ${cutMeta.max_mb} МБ.`);
+  const job = await guarded(() => api("POST", "/api/cut", { filename: f.name, size: f.size }));
+  if (!job) return;
+  history.replaceState(null, "", "#cut" + job.id);
+  await uploadChunks(job.id, f, 0, job.chunk);
+}
+
+async function uploadChunks(jid, file, offset, chunk) {
+  const box = document.getElementById("cutJob");
+  let retries = 0;
+  while (offset < file.size) {
+    box.innerHTML = `<div class="card"><div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+      <div>Загрузка «${esc(file.name)}»: ${fmtSize(offset)} из ${fmtSize(file.size)}</div>${progressBar(offset / file.size)}
+      <div class="sub">Не закрывай панель до конца загрузки.</div></div></div>`;
+    try {
+      const res = await fetch(`/api/cut/${jid}/chunk?offset=${offset}`, { method: "PUT",
+        headers: { "X-Init-Data": tg?.initData || "" }, body: file.slice(offset, offset + chunk) });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) { offset = data.uploaded; continue; }     // сервер уже имеет больше — продолжаем оттуда
+      if (!res.ok) throw new Error(data.error || "Ошибка " + res.status);
+      offset = Math.min(file.size, offset + chunk);
+      retries = 0;
+      if (data.status && data.status !== "uploading") return renderJob(data);
+    } catch (e) {
+      if (++retries > 5 || /видео|длиннее|больше/.test(e.message)) return alertMsg(e.message);
+      await new Promise(r => setTimeout(r, 2000 * retries));             // обрыв связи — повторяем
+      const st = await api("GET", `/api/cut/${jid}`).catch(() => null);
+      if (st) offset = st.uploaded;
+    }
+  }
+  const st = await guarded(() => api("GET", `/api/cut/${jid}`));
+  if (st) renderJob(st);
+}
+
+function renderJob(j) {
+  const box = document.getElementById("cutJob");
+  if (!box) return;
+  clearTimeout(cutPoll);
+  let html = `<div class="card"><div class="row"><div class="grow" style="min-width:0"><b class="ellipsis">${esc(j.filename)}</b>
+    <div class="sub">${CUT_STATUS[j.status] || j.status}${j.stage && j.status !== "done" ? " · " + esc(j.stage) : ""}</div></div></div>`;
+  if (["queued", "running"].includes(j.status)) {
+    html += `<div class="row" style="flex-direction:column;align-items:stretch;gap:6px">${progressBar(j.progress || 0)}
+      <div class="sub">${Math.round((j.progress || 0) * 100)}% · результат пришлю и в чат</div></div>`;
+    cutPoll = setTimeout(async () => { const r = await api("GET", `/api/cut/${j.id}`).catch(() => null); if (r) renderJob(r); }, 2000);
+  }
+  if (j.status === "failed") html += `<div class="row sub" style="color:var(--danger)">${esc(j.error || "ошибка")}</div>`;
+  if (["uploaded", "failed", "done"].includes(j.status) && j.status !== "done" || (j.status === "done" && !j.report)) {
+    html += `
+      <div class="row"><div class="seg">
+        <button id="tm_manual" class="on" onclick="cutMode('manual')">Вручную</button>
+        <button id="tm_channel" onclick="cutMode('channel')">Как на канале</button>
+        <button id="tm_list" onclick="cutMode('list')">Список</button></div></div>
+      <div id="tmBox"></div>
+      <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>`;
+  }
+  if (j.status === "done" && j.report_text) {
+    html += `<div class="row" style="white-space:pre-wrap;font-size:14px;line-height:1.45">${esc(j.report_text)}</div>`;
+    if (j.link) html += `<div class="row"><button class="wide" onclick="openLink(location.origin + '${j.link}')">📥 Скачать результат</button></div>`;
+    html += `<div class="row"><button class="ghost" onclick="location.hash='#cut'">Обрезать другое видео</button></div>`;
+  }
+  html += `</div>`;
+  box.innerHTML = html;
+  if (document.getElementById("tmBox")) cutMode("manual");
+}
+
+let cutModeCur = "manual";
+function cutMode(m) {
+  cutModeCur = m;
+  ["manual", "channel", "list"].forEach(k => document.getElementById("tm_" + k)?.classList.toggle("on", k === m));
+  document.getElementById("tmBox").innerHTML = {
+    manual: `<div class="row"><div class="grow">Целевая длина</div><input id="tmSec" class="num" placeholder="0:58" style="width:90px"></div>`,
+    channel: `<div class="row"><input id="tmUrl" class="grow" placeholder="https://www.youtube.com/@канал"></div>
+      <div class="hint" style="padding-bottom:8px">Возьму медиану длины лучших 30% роликов канала по просмотрам.</div>`,
+    list: `<div class="row"><textarea id="tmList" class="grow" rows="5" placeholder="0:45 1.2M&#10;0:30 800k&#10;1:05 50k"
+      style="font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--sep);border-radius:9px;padding:8px"></textarea></div>
+      <div class="hint" style="padding-bottom:8px">Строки «длительность просмотры» — возьму медиану лучших 30%.</div>`,
+  }[m];
+}
+
+async function runCut(jid) {
+  const body = { mode: cutModeCur };
+  if (cutModeCur === "manual") body.seconds = document.getElementById("tmSec").value;
+  if (cutModeCur === "channel") body.url = document.getElementById("tmUrl").value;
+  if (cutModeCur === "list") body.text = document.getElementById("tmList").value;
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, body));
+  if (r) { haptic("success"); renderJob(r); }
 }
 
 route();

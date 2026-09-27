@@ -13,6 +13,7 @@ import aiohttp
 from aiohttp import web
 
 from . import fmt
+from .cutjobs import CutWorker, job_dir
 from .db import DB, iso, utcnow
 from .scheduler import Scheduler, describe_slot
 from .settings import load_settings
@@ -186,6 +187,9 @@ class BotApp:
         msg = update.get("message") or {}
         user = msg.get("from") or {}
         text = (msg.get("text") or "").strip()
+        if user and msg.get("chat", {}).get("type") == "private" and self.has_access(user["id"]) \
+                and (msg.get("video") or (msg.get("document") or {}).get("mime_type", "").startswith("video/")):
+            return await self.on_video(msg)
         if not user or not text.startswith("/") or msg["chat"].get("type") != "private":
             return
         chat = msg["chat"]["id"]
@@ -222,6 +226,31 @@ class BotApp:
                 await self.tg.send(chat, "⚠️ Панель пока недоступна: нет HTTPS-адреса (см. окно бота).")
         elif text.startswith("/status"):
             await self.tg.send(chat, self.status_text(user["id"]))
+
+    async def on_video(self, msg):
+        """Видео прямо в чат (до 20 МБ — лимит Bot API на скачивание ботом)."""
+        uid = msg["from"]["id"]
+        f = msg.get("video") or msg.get("document")
+        size = f.get("file_size") or 0
+        btn = self.app_button("✂️ Открыть «Умную обрезку»", "#cut")
+        if size > 20 * 1024 * 1024:
+            await self.tg.send(uid, "Файл больше 20 МБ — Telegram не даёт боту его скачать. "
+                                    "Загрузи его через панель → «Умная обрезка» (там лимит "
+                                    f"{self.s.cut_max_mb} МБ).", [[btn]] if btn else None)
+            return
+        name = f.get("file_name") or "video.mp4"
+        info = await self.tg.call("getFile", file_id=f["file_id"])
+        jid = self.db.create_cut_job(uid, name, size, status="uploading")
+        d = job_dir(self.s, jid)
+        d.mkdir(parents=True, exist_ok=True)
+        src = d / ("src" + (Path(name).suffix.lower() or ".mp4"))
+        url = self.tg.base.replace("/bot", "/file/bot", 1) + info["file_path"]
+        async with self.tg.session.get(url) as r:
+            src.write_bytes(await r.read())
+        self.db.update_cut_job(jid, src_path=str(src), status="uploaded", size=src.stat().st_size)
+        btn = self.app_button("✂️ Выбрать длину и обрезать", f"#cut{jid}")
+        await self.tg.send(uid, f"Видео «{esc(name)}» получил. Выбери целевую длину в панели:",
+                           [[btn]] if btn else None)
 
     def status_text(self, uid):
         today = datetime.now(self.s.tz).date()
@@ -370,6 +399,7 @@ async def main():
             db.claim_orphan_projects(bot.owner_id)
         sched = Scheduler(db, s, bot)
         bot.sched = sched
+        bot.cut = CutWorker(db, s, bot)
 
         runner = web.AppRunner(WebApp(db, s, sched, bot).build(), access_log=None)
         await runner.setup()
@@ -397,7 +427,7 @@ async def main():
             await bot.tg.send(bot.owner_id, "🟢 Бот запущен.\n" + bot.status_text(bot.owner_id),
                               [[bot.app_button()]] if bot.app_button() else None)
         try:
-            await asyncio.gather(tg.poll(bot.handle), sched.loop())
+            await asyncio.gather(tg.poll(bot.handle), sched.loop(), bot.cut.loop())
         finally:
             if tunnel and tunnel.returncode is None:
                 tunnel.terminate()

@@ -17,6 +17,10 @@ class Settings:
     public_url: str
     cloudflared: str
     data_dir: Path
+    cut_max_mb: int = 1024
+    cut_max_minutes: int = 30
+    cut_link_ttl_h: int = 24
+    whisper_model: str = "small"
 
     @property
     def db_path(self):
@@ -29,6 +33,10 @@ class Settings:
     @property
     def work_dir(self):
         return self.data_dir / "work"
+
+    @property
+    def cut_dir(self):
+        return self.data_dir / "cut"
 
     @property
     def local_url(self):
@@ -53,4 +61,8 @@ def load_settings():
         public_url=os.getenv("PUBLIC_URL", "").strip().rstrip("/"),
         cloudflared=os.getenv("CLOUDFLARED", "").strip(),
         data_dir=data_dir,
+        cut_max_mb=int(os.getenv("CUT_MAX_MB", "1024")),
+        cut_max_minutes=int(os.getenv("CUT_MAX_MINUTES", "30")),
+        cut_link_ttl_h=int(os.getenv("CUT_LINK_TTL_H", "24")),
+        whisper_model=os.getenv("WHISPER_MODEL", "small"),
     )

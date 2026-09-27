@@ -20,7 +20,8 @@ from .web import WebApp
 
 log = logging.getLogger("bot")
 TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
-PRIVACY_RU = {"public": "публичное", "unlisted": "по ссылке", "private": "приватное"}
+PRIVACY_RU = {"public": "публичное", "unlisted": "по ссылке", "private": "приватное",
+              "scheduled": "публичное"}
 
 
 class BotApp:
@@ -54,9 +55,29 @@ class BotApp:
     # ----- уведомления от планировщика -----
     async def uploaded(self, project, result):
         await self.notify_text(
-            f"✅ <b>{esc(project['channel_title'] or project['name'])}</b>: залито "
-            f"({PRIVACY_RU.get(project['privacy'], project['privacy'])})\n"
+            f"✅ <b>{esc(project['channel_title'] or project['name'])}</b>: "
+            + (f"запланировано на YouTube — выйдет в {result.extra['publish_at'].astimezone(self.s.tz):%H:%M}"
+               if result.extra.get("publish_at")
+               else f"залито ({PRIVACY_RU.get(project['privacy'], project['privacy'])})") + "\n"
             f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}\n{result.info}")
+
+    async def video(self, project, result):
+        """Обработанное видео — владельцу в Telegram, с текстом для ручной публикации."""
+        e = result.extra
+        caption = (f"🎬 <b>{esc(project['name'])}</b>: готово к публикации (уже обработано)\n"
+                   f"{esc(result.title)}\nОригинал: {fmt.original_line(e, self.s.tz)}\n{e['source_url']}")
+        try:
+            await self.tg.send_video(self.owner_id, e["file"], caption)
+        except Exception as err:  # noqa: BLE001
+            await self.notify_text(f"❌ <b>{esc(project['name'])}</b>: не смог отправить видео в Telegram: "
+                                   f"<code>{esc(err)}</code>")
+            return
+        tags = " ".join("#" + t.replace(" ", "") for t in e.get("tags") or [])
+        await self.notify_text(
+            "📋 Текст для публикации (нажми, чтобы скопировать):\n\n"
+            f"<b>Название:</b>\n<code>{esc(result.title)}</code>\n\n"
+            + (f"<b>Описание:</b>\n<code>{esc(e.get('description'))[:3000]}</code>\n\n" if e.get("description") else "")
+            + (f"<b>Теги:</b>\n<code>{esc(tags)}</code>" if tags else ""))
 
     async def failed(self, project, result, retry_at):
         tail = f"\nПопробую ещё раз в {retry_at:%H:%M}." if retry_at else ""

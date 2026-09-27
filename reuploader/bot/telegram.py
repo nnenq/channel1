@@ -35,6 +35,24 @@ class TG:
         except Exception as e:  # noqa: BLE001 — уведомление не должно ронять бота
             log.warning("не удалось отправить сообщение: %s", e)
 
+    async def send_video(self, chat_id, path, caption, width=None, height=None):
+        form = aiohttp.FormData()
+        form.add_field("chat_id", str(chat_id))
+        form.add_field("caption", caption[:1024])
+        form.add_field("parse_mode", "HTML")
+        form.add_field("supports_streaming", "true")
+        if width and height:
+            form.add_field("width", str(width))
+            form.add_field("height", str(height))
+        with open(path, "rb") as f:
+            form.add_field("video", f, filename="short.mp4", content_type="video/mp4")
+            async with self.session.post(self.base + "sendVideo", data=form,
+                                         timeout=aiohttp.ClientTimeout(total=900)) as r:
+                data = await r.json()
+        if not data.get("ok"):
+            raise RuntimeError(f"Telegram sendVideo: {data.get('description')}")
+        return data["result"]
+
     async def poll(self, handler):
         offset = None
         while True:

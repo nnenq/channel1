@@ -63,6 +63,26 @@ def build_filter(effects):
     return graph
 
 
+def shrink_to(path, max_mb, duration):
+    """Пережимает видео, если оно больше max_mb (лимит Telegram для ботов — 50 МБ)."""
+    import os
+
+    path = str(path)
+    if os.path.getsize(path) <= max_mb * 1024 * 1024 or not duration:
+        return path
+    total_kbps = max_mb * 8 * 1024 * 0.92 / duration
+    video_kbps = max(int(total_kbps - 128), 300)
+    tmp = path + ".small.mp4"
+    subprocess.run([
+        ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", path,
+        "-c:v", "libx264", "-preset", "medium", "-b:v", f"{video_kbps}k",
+        "-maxrate", f"{video_kbps}k", "-bufsize", f"{video_kbps * 2}k",
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", tmp,
+    ], check=True)
+    os.replace(tmp, path)
+    return path
+
+
 def apply_effects(src, dst, effects):
     cmd = [
         ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error",

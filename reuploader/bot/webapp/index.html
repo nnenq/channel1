@@ -82,7 +82,8 @@ const tg = window.Telegram?.WebApp;
 tg?.ready(); tg?.expand();
 const $root = document.getElementById("root");
 const STATUS = { planned: "🕒", running: "⏳", done: "✅", failed: "❌", skipped: "⏭" };
-const PRIVACY = [["public", "Публичное"], ["unlisted", "По ссылке"], ["private", "Приватное"]];
+const DELIVERY = [["youtube", "На YouTube"], ["telegram", "Мне в Telegram"], ["both", "Оба"]];
+const PRIVACY = [["scheduled", "Запланировать"], ["public", "Сразу"], ["unlisted", "По ссылке"], ["private", "Приватное"]];
 let state = {};
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -146,7 +147,7 @@ async function showHome() {
   const data = await guarded(() => api("GET", "/api/projects"));
   if (!data) { $root.innerHTML = `<div class="empty">Открой панель из Telegram-бота.</div>`; return; }
   const cards = data.projects.map(p => {
-    let badge = !p.linked ? `<span class="badge warn">нет канала</span>`
+    let badge = !p.ready ? `<span class="badge warn">нет канала</span>`
       : !p.enabled ? `<span class="badge">пауза</span>`
       : p.exhausted ? `<span class="badge warn">видео кончились</span>`
       : `<span class="badge ok">${p.today_done}/${p.today_total} сегодня</span>`;
@@ -185,14 +186,25 @@ async function showProject(id, data) {
       <div class="hint" style="padding-bottom:10px">${p.enabled ? "Работает по расписанию" : "На паузе — автоматически не заливает"}
         · всего перезалито: ${data.total_uploaded}</div></div>
 
-    <h2>Куда заливать</h2>
+    <h2>Куда отправлять готовые видео</h2>
+    <div class="card">
+      <div class="row"><div class="seg">${DELIVERY.map(([k, v]) =>
+        `<button class="${p.delivery === k ? "on" : ""}" onclick="patch({delivery:'${k}'})">${v}</button>`).join("")}</div></div>
+    </div>
+    <div class="hint">${{
+      youtube: "Бот сам публикует обработанное видео на твой канал.",
+      telegram: "Бот присылает тебе в этот чат уже обработанное видео и текст (название, описание, теги) — выкладываешь сам. Привязка канала не нужна.",
+      both: "Бот публикует на канал и заодно присылает копию видео тебе в Telegram.",
+    }[p.delivery]}</div>
+
+    ${p.delivery === "telegram" ? "" : `<h2>Канал для перезалива</h2>
     <div class="card">
       ${p.linked ? `<div class="row"><div class="grow"><b>${esc(p.channel_title)}</b>
           <div class="sub"><a href="#" onclick="openLink('https://youtube.com/channel/${esc(p.channel_id)}');return false">открыть канал</a></div></div>
           <button class="ghost" onclick="linkChannel()">Сменить</button></div>`
         : `<div class="row"><div class="grow">Канал не привязан</div><button onclick="linkChannel()">Привязать канал</button></div>`}
     </div>
-    <div class="hint">Вход в Google открывается в браузере — делай это <b>на компьютере, где запущен бот</b> (в Telegram Desktop). Выбери именно канал для перезалива.</div>
+    <div class="hint">Вход в Google открывается в браузере — делай это <b>на компьютере, где запущен бот</b> (в Telegram Desktop). Выбери именно канал для перезалива.</div>`}
 
     <h2>Откуда брать — твои каналы</h2>
     <div class="card">
@@ -235,11 +247,13 @@ async function showProject(id, data) {
         <div class="row"><div class="chips grow">${p.fixed_times.map(t => `<span class="chip">${t}<button class="x" onclick="delTime('${t}')">×</button></span>`).join("") || `<span class="sub">Добавь время публикаций</span>`}</div></div>
         <div class="row"><div class="grow">Добавить время</div><input ${HHMM} id="newTime" value="15:00"><button onclick="addTime()">+</button></div>
       `}
-      <div class="row"><div class="seg">${PRIVACY.map(([k, v]) =>
-        `<button class="${p.privacy === k ? "on" : ""}" onclick="patch({privacy:'${k}'})">${v}</button>`).join("")}</div></div>
+      ${p.delivery === "telegram" ? "" : `<div class="row"><div class="seg">${PRIVACY.map(([k, v]) =>
+        `<button class="${p.privacy === k ? "on" : ""}" onclick="patch({privacy:'${k}'})">${v}</button>`).join("")}</div></div>`}
     </div>
     <div class="hint">Часовой пояс: ${esc(data.tz)}. ${p.schedule_mode === "auto"
-      ? "Каждый день время случайное внутри окна, с промежутком между роликами." : "Каждый день в эти часы."}</div>
+      ? "Каждый день время случайное внутри окна, с промежутком между роликами." : "Каждый день в эти часы."}
+      ${p.delivery !== "telegram" && p.privacy === "scheduled" ? "<br><b>Запланировать:</b> бот заранее загружает ролики как отложенные публикации — YouTube сам выложит их в указанное время (YouTube Studio → Контент → «Запланировано»). После загрузки компьютер можно выключать."
+        : p.delivery !== "telegram" && p.privacy === "public" ? "<br><b>Сразу:</b> бот загружает и публикует ролик в указанное время — компьютер должен быть включён." : ""}</div>
 
     <h2>План</h2>
     <div class="card">
@@ -249,8 +263,8 @@ async function showProject(id, data) {
           ${s.info && s.status !== "planned" ? `<div class="sub ellipsis">${s.status === "done" ? `<a href="#" onclick="openLink('${esc(s.info)}');return false">${esc(s.info)}</a>` : esc(s.info)}</div>` : ""}
           ${s.retry ? `<div class="sub">повторная попытка</div>` : ""}</div>
         ${s.status === "planned" ? `<button class="x" onclick="cancelSlot(${s.id})">×</button>` : ""}</div>`).join("")
-        || `<div class="empty">${p.linked ? (p.enabled ? "На сегодня публикаций нет" : "Проект на паузе") : "Привяжи канал — и расписание появится"}</div>`}
-      ${p.linked && p.enabled ? `<div class="row"><button class="ghost" onclick="replan()">🎲 Перераспределить время на сегодня</button></div>` : ""}
+        || `<div class="empty">${p.ready ? (p.enabled ? "На сегодня публикаций нет" : "Проект на паузе") : "Привяжи канал или выбери «Мне в Telegram» — и расписание появится"}</div>`}
+      ${p.ready && p.enabled ? `<div class="row"><button class="ghost" onclick="replan()">🎲 Перераспределить время на сегодня</button></div>` : ""}
     </div>
 
     <h2>Выбрать видео вручную</h2>
@@ -272,8 +286,8 @@ async function showProject(id, data) {
 
     <h2>История</h2>
     <div class="card">
-      ${data.uploads.map(u => `<div class="row tap" onclick="openLink('${esc(u.url)}')"><div class="grow">
-        <div class="ellipsis">${esc(u.title)}</div><div class="sub">залит ${u.at}${u.views ? " · ориг. 👁 " + fmtViews(u.views) : ""}${u.published ? " · вышел " + fmtDate(u.published) : ""}</div></div>
+      ${data.uploads.map(u => `<div class="row tap" onclick="openLink('${esc(u.url || u.source)}')"><div class="grow">
+        <div class="ellipsis">${esc(u.title)}</div><div class="sub">${u.url ? "залит" : "📩 прислан"} ${u.at}${u.views ? " · ориг. 👁 " + fmtViews(u.views) : ""}${u.published ? " · вышел " + fmtDate(u.published) : ""}</div></div>
         <span class="sub">↗</span></div>`).join("") || `<div class="empty">Пока ничего не залито</div>`}
     </div>
 
@@ -368,7 +382,7 @@ function publishPrompt(url, vid) {
   const run = when => guarded(async () => {
     const r = await api("POST", `/api/projects/${pid()}/publish`, { video_url: url, title, when });
     haptic("success");
-    toast(when === "now" ? "Заливаю сейчас — пришлю ссылку в чат" : "Запланировано на " + r.at);
+    toast(when === "now" ? "Обрабатываю сейчас — пришлю результат в чат" : "Запланировано на " + r.at);
     reload();
   });
   const choose = id => {

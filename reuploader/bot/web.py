@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl
 
 from aiohttp import web
 
-from .db import from_iso, iso, utcnow
+from .db import from_iso, iso, needs_youtube, utcnow
 from .telegram import esc
 
 WEBAPP_DIR = Path(__file__).parent / "webapp"
@@ -21,7 +21,7 @@ CHANNEL_RE = re.compile(
 )
 VIDEO_RE = re.compile(r"(?:youtube\.com/(?:shorts/|watch\?v=)|youtu\.be/)([\w-]{11})")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-PRIVACY = {"public", "unlisted", "private"}
+PRIVACY = {"public", "unlisted", "private", "scheduled"}
 TOP_CACHE_TTL = 20 * 60
 
 
@@ -135,6 +135,7 @@ class WebApp:
         return {
             "id": p["id"], "name": p["name"], "enabled": p["enabled"],
             "channel_title": p["channel_title"], "linked": bool(p["token_path"]),
+            "delivery": p["delivery"], "ready": bool(p["token_path"]) or not needs_youtube(p),
             "sources": len(self.db.sources(p["id"])),
             "today_done": sum(s["status"] == "done" for s in slots),
             "today_total": len(slots),
@@ -163,7 +164,7 @@ class WebApp:
         slots = [s for s in self.db.upcoming_slots(p["id"], since) if s["status"] != "cancelled"]
         uploads = [{
             "title": u["title"], "views": u["views"], "at": self._local(u["uploaded_at"]).strftime("%d.%m %H:%M"),
-            "url": f"https://youtube.com/shorts/{u['new_video_id']}",
+            "url": f"https://youtube.com/shorts/{u['new_video_id']}" if u["new_video_id"] else None,
             "source": f"https://youtube.com/shorts/{u['video_id']}",
             "published": u["published"],
         } for u in self.db.uploads(p["id"])]
@@ -171,7 +172,9 @@ class WebApp:
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
-                "sort_by", "max_age_days", "channel_title", "channel_id")} | {"linked": bool(p["token_path"]),
+                "sort_by", "max_age_days", "delivery", "channel_title", "channel_id")} | {
+                                                   "linked": bool(p["token_path"]),
+                                                   "ready": bool(p["token_path"]) or not needs_youtube(p),
                                                    "exhausted": bool(p["exhausted_on"])},
             "sources": [{"id": s["id"], "url": s["url"], "label": channel_label(s["url"])}
                         for s in self.db.sources(p["id"])],
@@ -223,6 +226,10 @@ class WebApp:
             if body["strategy"] not in ("rotate", "top"):
                 raise ApiError("Неизвестная стратегия.")
             upd["strategy"] = body["strategy"]
+        if "delivery" in body:
+            if body["delivery"] not in ("youtube", "telegram", "both"):
+                raise ApiError("Неизвестный способ публикации.")
+            upd["delivery"] = body["delivery"]
         if "sort_by" in body:
             if body["sort_by"] not in ("views", "per_day"):
                 raise ApiError("Неизвестная сортировка.")
@@ -234,7 +241,7 @@ class WebApp:
         self._reset_exhausted(p, upd)
         self.db.update_project(p["id"], **upd)
 
-        schedule_keys = {"enabled", "per_day", "min_gap", "max_gap", "window_start", "window_end",
+        schedule_keys = {"enabled", "delivery", "per_day", "min_gap", "max_gap", "window_start", "window_end",
                          "schedule_mode", "fixed_times"}
         if schedule_keys & upd.keys():
             self.sched.plan_day(self.db.project(p["id"]), force=True)
@@ -312,8 +319,8 @@ class WebApp:
     async def publish(self, request):
         """Залить конкретное видео: сейчас / в ближайший слот / в указанное время."""
         p = self._project(request)
-        if not p["token_path"]:
-            raise ApiError("Сначала привяжи канал для перезалива.")
+        if needs_youtube(p) and not p["token_path"]:
+            raise ApiError("Сначала привяжи канал для перезалива — или выбери «Мне в Telegram».")
         body = await request.json()
         m = VIDEO_RE.search(body.get("video_url", ""))
         if not m:
@@ -346,8 +353,8 @@ class WebApp:
 
     async def replan(self, request):
         p = self._project(request)
-        if not p["token_path"]:
-            raise ApiError("Сначала привяжи канал для перезалива.")
+        if needs_youtube(p) and not p["token_path"]:
+            raise ApiError("Сначала привяжи канал для перезалива — или выбери «Мне в Telegram».")
         if not p["enabled"]:
             raise ApiError("Проект на паузе.")
         self.sched.plan_day(p, force=True)

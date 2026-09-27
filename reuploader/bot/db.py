@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS projects (
     privacy TEXT NOT NULL DEFAULT 'public',
     strategy TEXT NOT NULL DEFAULT 'rotate',
     sort_by TEXT NOT NULL DEFAULT 'views',
+    delivery TEXT NOT NULL DEFAULT 'youtube',
     max_age_days INTEGER NOT NULL DEFAULT 0,
     effects TEXT NOT NULL DEFAULT '{}',
     exhausted_on TEXT,
@@ -76,13 +77,19 @@ MIGRATIONS = [
     ("projects", "sort_by", "TEXT NOT NULL DEFAULT 'views'"),
     ("projects", "max_age_days", "INTEGER NOT NULL DEFAULT 0"),
     ("uploads", "published", "TEXT"),
+    ("projects", "delivery", "TEXT NOT NULL DEFAULT 'youtube'"),
 ]
 
 PROJECT_FIELDS = {
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
-    "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days",
+    "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }
+
+
+def needs_youtube(project):
+    """Нужна ли проекту привязка YouTube-канала (иначе видео только присылаются в Telegram)."""
+    return project["delivery"] != "telegram"
 
 
 def utcnow():
@@ -229,6 +236,15 @@ class DB:
                          WHERE s.status = 'planned' AND s.run_at <= ?
                            AND (p.enabled = 1 OR s.kind = 'manual')
                          ORDER BY s.run_at""", now_iso)
+
+    def early_slots(self, not_before_iso):
+        """Слоты проектов с отложенной публикацией на YouTube: их загружаем заранее,
+        а YouTube сам публикует в назначенное время."""
+        return self.q("""SELECT s.* FROM slots s JOIN projects p ON p.id = s.project_id
+                         WHERE s.status = 'planned' AND s.run_at >= ?
+                           AND p.privacy = 'scheduled' AND p.delivery != 'telegram'
+                           AND (p.enabled = 1 OR s.kind = 'manual')
+                         ORDER BY s.run_at""", not_before_iso)
 
     def set_slot(self, sid, status, info=None, **extra):
         cols = ["status = ?", "info = ?"] + [f"{k} = ?" for k in extra]

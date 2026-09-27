@@ -1,4 +1,5 @@
 """Авторизация целевого канала и загрузка через YouTube Data API v3."""
+from datetime import timezone
 from pathlib import Path
 
 from google.auth.exceptions import RefreshError
@@ -64,7 +65,10 @@ def channel_title(youtube):
     return my_channel(youtube)[1]
 
 
-def upload(youtube, path, title, description, tags, privacy, category_id, made_for_kids):
+def upload(youtube, path, title, description, tags, privacy, category_id, made_for_kids,
+           publish_at=None):
+    """publish_at (datetime с часовым поясом) — отложенная публикация: видео загружается
+    приватным, и YouTube сам делает его публичным в это время."""
     body = {
         "snippet": {
             "title": title[:100],
@@ -77,6 +81,9 @@ def upload(youtube, path, title, description, tags, privacy, category_id, made_f
             "selfDeclaredMadeForKids": bool(made_for_kids),
         },
     }
+    if publish_at is not None:
+        body["status"]["privacyStatus"] = "private"
+        body["status"]["publishAt"] = publish_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     media = MediaFileUpload(str(path), mimetype="video/mp4", chunksize=8 * 1024 * 1024, resumable=True)
     request = youtube.videos().insert(part="snippet,status", body=body, media_body=media)
     response = None

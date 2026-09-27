@@ -1,9 +1,10 @@
 """Планировщик: раз в день раскладывает публикации по времени и выполняет их."""
 import asyncio
 import logging
+import shutil
 from datetime import datetime, timedelta
 
-from .db import from_iso, iso, utcnow
+from .db import from_iso, iso, needs_youtube, utcnow
 from .planner import day_bounds, parse_hhmm, plan_auto
 from .telegram import esc
 from .worker import run_slot
@@ -13,6 +14,8 @@ log = logging.getLogger("scheduler")
 TICK = 20                         # как часто проверять расписание, секунд
 MAX_LATE = timedelta(minutes=90)  # если бот был выключен дольше — слот пропускается
 RETRY_AFTER = timedelta(minutes=20)
+SCHEDULE_LEAD = timedelta(minutes=15)
+PLAN_TOMORROW_HOUR = 20              # с этого часа планируем завтрашний день  # publishAt должен быть в будущем — с запасом
 
 
 class Scheduler:
@@ -36,7 +39,7 @@ class Scheduler:
         force=True — перепланировать: ещё не выполненные авто-слоты отменяются
         и раскладываются заново с учётом уже сделанных за день.
         """
-        if not project["enabled"] or not project["token_path"]:
+        if not project["enabled"] or (needs_youtube(project) and not project["token_path"]):
             return []
         now = self.now_local()
         day = day or now.date()
@@ -72,13 +75,21 @@ class Scheduler:
         return times
 
     def plan_all(self):
+        now = self.now_local()
         for p in self.db.projects():
             self.plan_day(p)
+            # Отложенные публикации: вечером сразу планируем и загружаем завтрашние,
+            # чтобы днём компьютер мог быть выключен.
+            if p["privacy"] == "scheduled" and p["delivery"] != "telegram" and now.hour >= PLAN_TOMORROW_HOUR:
+                self.plan_day(p, now.date() + timedelta(days=1))
 
     # ---------- выполнение ----------
     async def run_due(self):
         async with self.busy:
             for slot in self.db.due_slots(iso(utcnow())):
+                await self._run(slot)
+            # Отложенные публикации загружаем сразу, как только слот появился
+            for slot in self.db.early_slots(iso(utcnow() + SCHEDULE_LEAD)):
                 await self._run(slot)
 
     async def _run(self, slot):
@@ -99,7 +110,13 @@ class Scheduler:
         if result.status == "done":
             if project["exhausted_on"]:
                 self.db.update_project(project["id"], exhausted_on=None)
-            await self.notify.uploaded(project, result)
+            if result.new_id:
+                await self.notify.uploaded(project, result)
+            if result.extra.get("file"):
+                try:
+                    await self.notify.video(project, result)
+                finally:
+                    shutil.rmtree(result.extra["work"], ignore_errors=True)
         elif result.exhausted:
             today = self.now_local().date().isoformat()
             if project["exhausted_on"] != today:   # напоминаем не чаще раза в день

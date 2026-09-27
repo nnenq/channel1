@@ -165,12 +165,13 @@ class WebApp:
             "title": u["title"], "views": u["views"], "at": self._local(u["uploaded_at"]).strftime("%d.%m %H:%M"),
             "url": f"https://youtube.com/shorts/{u['new_video_id']}",
             "source": f"https://youtube.com/shorts/{u['video_id']}",
+            "published": u["published"],
         } for u in self.db.uploads(p["id"])]
         return web.json_response({
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
-                "channel_title", "channel_id")} | {"linked": bool(p["token_path"]),
+                "sort_by", "max_age_days", "channel_title", "channel_id")} | {"linked": bool(p["token_path"]),
                                                    "exhausted": bool(p["exhausted_on"])},
             "sources": [{"id": s["id"], "url": s["url"], "label": channel_label(s["url"])}
                         for s in self.db.sources(p["id"])],
@@ -222,8 +223,15 @@ class WebApp:
             if body["strategy"] not in ("rotate", "top"):
                 raise ApiError("Неизвестная стратегия.")
             upd["strategy"] = body["strategy"]
+        if "sort_by" in body:
+            if body["sort_by"] not in ("views", "per_day"):
+                raise ApiError("Неизвестная сортировка.")
+            upd["sort_by"] = body["sort_by"]
+        if "max_age_days" in body:
+            upd["max_age_days"] = _int(body["max_age_days"] or 0, 0, 3650, "Не старше, дней")
         if "effects" in body:
             upd["effects"] = _effects(body["effects"], p["effects"])
+        self._reset_exhausted(p, upd)
         self.db.update_project(p["id"], **upd)
 
         schedule_keys = {"enabled", "per_day", "min_gap", "max_gap", "window_start", "window_end",
@@ -256,23 +264,40 @@ class WebApp:
             self.db.update_project(p["id"], exhausted_on=None)
         return await self.get_project(request)
 
+    def _reset_exhausted(self, p, upd):
+        if p["exhausted_on"] and {"sort_by", "max_age_days", "strategy"} & upd.keys():
+            upd["exhausted_on"] = None
+
     async def delete_source(self, request):
         p = self._project(request)
         self.db.delete_source(p["id"], int(request.match_info["sid"]))
         return await self.get_project(request)
 
     async def top_videos(self, request):
-        from ..source import list_shorts
+        """Ролики каналов-источников с датой выхода, длительностью и просмотрами в день."""
+        from ..source import enrich, list_shorts
+        from ..uploader import youtube_client
 
         p = self._project(request)
         uploaded = self.db.uploaded_ids(p["id"])
         loop = asyncio.get_running_loop()
+        youtube = None
+        if p["token_path"]:
+            try:
+                youtube = await loop.run_in_executor(None, youtube_client, p["token_path"])
+            except Exception:  # noqa: BLE001 — без API даты подтянутся медленнее через yt-dlp
+                youtube = None
+
+        def fetch(url):
+            videos = list_shorts(url, 100)
+            return enrich(videos, youtube, limit=30)
+
         result = []
         for s in self.db.sources(p["id"]):
             cached = self.top_cache.get(s["url"])
             if not cached or time.time() - cached[0] > TOP_CACHE_TTL or "refresh" in request.query:
                 try:
-                    videos = await loop.run_in_executor(None, list_shorts, s["url"], 100)
+                    videos = await loop.run_in_executor(None, fetch, s["url"])
                 except Exception as e:  # noqa: BLE001
                     result.append({"label": channel_label(s["url"]), "error": str(e)[:200], "videos": []})
                     continue
@@ -280,9 +305,9 @@ class WebApp:
                 self.top_cache[s["url"]] = cached
             result.append({
                 "label": channel_label(s["url"]),
-                "videos": [dict(v, uploaded=v["id"] in uploaded) for v in cached[1][:15]],
+                "videos": [dict(v, uploaded=v["id"] in uploaded) for v in cached[1]],
             })
-        return web.json_response({"sources": result})
+        return web.json_response({"sources": result, "with_api": youtube is not None})
 
     async def publish(self, request):
         """Залить конкретное видео: сейчас / в ближайший слот / в указанное время."""

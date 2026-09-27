@@ -1,4 +1,6 @@
 """Получение списка шортсов канала и скачивание через yt-dlp."""
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yt_dlp
@@ -35,6 +37,7 @@ def list_shorts(channel_url, scan_limit=200):
                 "id": e["id"],
                 "title": e.get("title") or "",
                 "view_count": e.get("view_count"),
+                "duration": e.get("duration"),
                 "url": f"https://www.youtube.com/shorts/{e['id']}",
             }
         )
@@ -50,6 +53,68 @@ def list_shorts(channel_url, scan_limit=200):
                     pass
 
     videos.sort(key=lambda v: v["view_count"] or 0, reverse=True)
+    return videos
+
+
+def iso_duration(s):
+    """'PT1M5S' -> 65 (секунд)."""
+    m = re.fullmatch(r"P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", s or "")
+    if not m or not s:
+        return None
+    d, h, mi, se = (int(x or 0) for x in m.groups())
+    return ((d * 24 + h) * 60 + mi) * 60 + se
+
+
+def enrich(videos, youtube=None, limit=60):
+    """Добавляет дату выхода, возраст и просмотры в день.
+
+    С клиентом YouTube API — точно и быстро (1 единица квоты на 50 роликов).
+    Без него — через yt-dlp по одному ролику (медленно), только первые `limit`.
+    Добавляемые ключи: published (ISO), age_days, views_per_day, duration (сек).
+    """
+    if youtube is not None:
+        for i in range(0, len(videos), 50):
+            batch = videos[i:i + 50]
+            resp = youtube.videos().list(
+                part="snippet,statistics,contentDetails", id=",".join(v["id"] for v in batch), maxResults=50
+            ).execute()
+            by_id = {it["id"]: it for it in resp.get("items", [])}
+            for v in batch:
+                it = by_id.get(v["id"])
+                if not it:
+                    continue
+                v["published"] = it["snippet"].get("publishedAt")
+                v["title"] = it["snippet"].get("title") or v["title"]
+                v["duration"] = iso_duration(it.get("contentDetails", {}).get("duration")) or v.get("duration")
+                views = it.get("statistics", {}).get("viewCount")
+                if views is not None:
+                    v["view_count"] = int(views)
+    else:
+        with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+            for v in videos[:limit]:
+                if v.get("published"):
+                    continue
+                try:
+                    info = ydl.extract_info(v["url"], download=False)
+                except yt_dlp.utils.DownloadError:
+                    continue
+                ts = info.get("timestamp")
+                if ts:
+                    v["published"] = datetime.fromtimestamp(ts, timezone.utc).isoformat()
+                elif info.get("upload_date"):
+                    d = info["upload_date"]
+                    v["published"] = f"{d[:4]}-{d[4:6]}-{d[6:]}T00:00:00+00:00"
+                if info.get("view_count") is not None:
+                    v["view_count"] = info["view_count"]
+                v["duration"] = info.get("duration") or v.get("duration")
+
+    now = datetime.now(timezone.utc)
+    for v in videos:
+        if v.get("published"):
+            dt = datetime.fromisoformat(v["published"].replace("Z", "+00:00"))
+            v["age_days"] = round(max((now - dt).total_seconds(), 0) / 86400, 2)
+            # Моложе суток считаем как сутки, чтобы свежие ролики не "взрывали" рейтинг
+            v["views_per_day"] = int((v["view_count"] or 0) / max(v["age_days"], 1))
     return videos
 
 
@@ -74,5 +139,8 @@ def download(video_url, out_dir):
         "description": info.get("description") or "",
         "tags": info.get("tags") or [],
         "view_count": info.get("view_count"),
+        "duration": info.get("duration"),
+        "published": (datetime.fromtimestamp(info["timestamp"], timezone.utc).isoformat()
+                      if info.get("timestamp") else None),
     }
     return path, meta

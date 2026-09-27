@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS projects (
     fixed_times TEXT NOT NULL DEFAULT '["13:00","16:00"]',
     privacy TEXT NOT NULL DEFAULT 'public',
     strategy TEXT NOT NULL DEFAULT 'rotate',
+    sort_by TEXT NOT NULL DEFAULT 'views',
+    max_age_days INTEGER NOT NULL DEFAULT 0,
     effects TEXT NOT NULL DEFAULT '{}',
     exhausted_on TEXT,
     created_at TEXT NOT NULL
@@ -45,6 +47,7 @@ CREATE TABLE IF NOT EXISTS uploads (
     video_id TEXT NOT NULL,
     title TEXT,
     views INTEGER,
+    published TEXT,
     new_video_id TEXT NOT NULL,
     uploaded_at TEXT NOT NULL
 );
@@ -68,9 +71,16 @@ CREATE TABLE IF NOT EXISTS slots (
 CREATE INDEX IF NOT EXISTS slots_due ON slots(status, run_at);
 """
 
+# Колонки, добавленные после первой версии: (таблица, колонка, определение)
+MIGRATIONS = [
+    ("projects", "sort_by", "TEXT NOT NULL DEFAULT 'views'"),
+    ("projects", "max_age_days", "INTEGER NOT NULL DEFAULT 0"),
+    ("uploads", "published", "TEXT"),
+]
+
 PROJECT_FIELDS = {
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
-    "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
+    "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }
 
@@ -97,6 +107,10 @@ class DB:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        for table, col, definition in MIGRATIONS:
+            cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition}")
         self.lock = threading.RLock()
 
     def q(self, sql, *args):
@@ -177,9 +191,11 @@ class DB:
     def uploaded_ids(self, pid):
         return {r["video_id"] for r in self.q("SELECT video_id FROM uploads WHERE project_id = ?", pid)}
 
-    def add_upload(self, pid, source_url, video_id, title, views, new_id):
-        self.x("""INSERT INTO uploads(project_id, source_url, video_id, title, views, new_video_id, uploaded_at)
-                  VALUES(?, ?, ?, ?, ?, ?, ?)""", pid, source_url, video_id, title, views, new_id, iso(utcnow()))
+    def add_upload(self, pid, source_url, video_id, title, views, new_id, published=None):
+        self.x("""INSERT INTO uploads(project_id, source_url, video_id, title, views, published,
+                                     new_video_id, uploaded_at)
+                  VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+               pid, source_url, video_id, title, views, published, new_id, iso(utcnow()))
 
     def uploads(self, pid, limit=30):
         return self.q("SELECT * FROM uploads WHERE project_id = ? ORDER BY uploaded_at DESC LIMIT ?", pid, limit)

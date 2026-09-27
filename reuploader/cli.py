@@ -12,30 +12,43 @@ def _fmt_views(n):
     return "?" if n is None else f"{n:,}".replace(",", " ")
 
 
+def _describe(v):
+    parts = [f"{_fmt_views(v['view_count'])} просм."]
+    if v.get("published"):
+        parts.append(f"вышел {v['published'][:16].replace('T', ' ')} UTC, {v['age_days']:.0f} дн. назад")
+    if v.get("duration"):
+        parts.append(f"{int(v['duration']) // 60}:{int(v['duration']) % 60:02d}")
+    if v.get("views_per_day") is not None:
+        parts.append(f"~{_fmt_views(v['views_per_day'])}/день")
+    return ", ".join(parts)
+
+
 def run_job(job, dry_run=False, source_override=None, keep_files=False):
     from .pipeline import build_text, pick, prepare
+    from .source import enrich
     from .uploader import channel_title, upload, youtube_client
 
     print(f"== Задача {job['name']} ==")
     history = History(job["name"])
     sources = [source_override] if source_override else job["sources"]
     print("  источники: " + ", ".join(sources))
+    youtube = None
+    if not dry_run or Path(job["token"]).exists():
+        youtube = youtube_client(job["token"])
+        print(f"  целевой канал: {channel_title(youtube)}")
     picked = pick(
         sources, history, count=job["per_run"], scan_limit=job["scan_limit"],
         min_views=job["min_views"], strategy=job.get("strategy", "top"),
+        sort_by=job.get("sort_by", "views"), max_age_days=job.get("max_age_days", 0),
+        enrich=(lambda vs: enrich(vs, youtube)) if youtube else None,
     )
     if not picked:
-        print("  нечего заливать — всё топовое уже перезалито")
+        print("  нечего заливать — всё подходящее уже перезалито")
         return
-
-    youtube = None
-    if not dry_run:
-        youtube = youtube_client(job["token"])
-        print(f"  целевой канал: {channel_title(youtube)}")
 
     work = WORK_DIR / job["name"]
     for v in picked:
-        print(f"  -> {v['title']!r} ({_fmt_views(v['view_count'])} просмотров) {v['url']}")
+        print(f"  -> {v['title']!r} ({_describe(v)}) {v['url']}")
         print("    скачивание и уникализация...")
         src, out, meta = prepare(v["url"], work, job["effects"])
         title, description, tags = build_text(meta, job)
@@ -72,6 +85,10 @@ def main():
     ls.add_argument("channel")
     ls.add_argument("-n", type=int, default=15)
     ls.add_argument("--scan-limit", type=int, default=200)
+    ls.add_argument("--sort", choices=["views", "per_day", "new"], default="views",
+                    help="views — всего просмотров, per_day — просмотров в день, new — новые")
+    ls.add_argument("--days", type=int, default=0, help="только ролики не старше N дней")
+    ls.add_argument("--token", help="токен канала: даты через YouTube API (быстро и для всех роликов)")
 
     r = sub.add_parser("run", help="перезалить топ-видео для задач из конфига")
     r.add_argument("--job", action="append", help="только эти задачи (можно несколько раз)")
@@ -87,10 +104,24 @@ def main():
     args = p.parse_args()
 
     if args.cmd == "top":
-        from .source import list_shorts
+        from .pipeline import rank
+        from .source import enrich, list_shorts
 
-        for i, v in enumerate(list_shorts(args.channel, args.scan_limit)[: args.n], 1):
-            print(f"{i:>3}. {_fmt_views(v['view_count']):>12}  {v['url']}  {v['title']}")
+        videos = list_shorts(args.channel, args.scan_limit)
+        if args.token:
+            from .uploader import youtube_client
+
+            enrich(videos, youtube_client(args.token))
+        else:
+            print("(даты через yt-dlp — медленно, только первые 40 роликов; с --token быстрее)")
+            enrich(videos, None, limit=40)
+        if args.sort == "new":
+            videos = [v for v in videos if not args.days or (v.get("age_days") or 1e9) <= args.days]
+            videos.sort(key=lambda v: v.get("published") or "", reverse=True)
+        else:
+            videos = rank(videos, sort_by=args.sort, max_age_days=args.days)
+        for i, v in enumerate(videos[: args.n], 1):
+            print(f"{i:>3}. {v['url']}  {v['title']}\n     {_describe(v)}")
         return
 
     if args.cmd == "auth":

@@ -12,34 +12,67 @@ DEFAULT_TEXT = {
 }
 
 
-def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="top"):
-    """Выбирает `count` самых просматриваемых ещё не перезалитых шортсов.
+SORTS = {
+    "views": lambda v: v["view_count"] or 0,                  # больше всего просмотров всего
+    "per_day": lambda v: v.get("views_per_day") or -1,        # быстрее всего набирают
+}
 
-    strategy="top"    — общий топ по всем источникам (крупный канал будет чаще);
-    strategy="rotate" — источники по очереди (в порядке списка `sources`),
-                        с каждого берётся его топ.
-    Возвращает список словарей с ключами id, title, view_count, url, source.
+
+def rank(videos, exclude_ids=(), sort_by="views", max_age_days=0, min_views=0):
+    """Фильтрует и сортирует ролики.
+
+    max_age_days > 0 — только ролики не старше стольких дней
+    (ролики без известной даты при этом отбрасываются).
     """
+    out = []
+    for v in videos:
+        if v["id"] in exclude_ids or (v["view_count"] or 0) < min_views:
+            continue
+        if max_age_days and (v.get("age_days") is None or v["age_days"] > max_age_days):
+            continue
+        out.append(v)
+    out.sort(key=SORTS.get(sort_by, SORTS["views"]), reverse=True)
+    return out
+
+
+def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="top",
+         sort_by="views", max_age_days=0, enrich=None):
+    """Выбирает `count` лучших ещё не перезалитых шортсов.
+
+    strategy="top"    — общий рейтинг по всем источникам;
+    strategy="rotate" — источники по очереди (в порядке списка `sources`),
+                        с каждого берётся его лучший.
+    sort_by="views" — по просмотрам всего, "per_day" — по просмотрам в день.
+    enrich(videos) — добавляет даты/просмотры в день (см. source.enrich);
+    нужен для sort_by="per_day" и max_age_days.
+    Возвращает список словарей с ключами id, title, view_count, url, source, ...
+    """
+    from .source import enrich as ytdlp_enrich
     from .source import list_shorts
 
-    def fresh(videos):
-        return [
-            v for v in videos
-            if v["id"] not in exclude_ids and (v["view_count"] or 0) >= min_views
-        ]
+    need_dates = sort_by == "per_day" or bool(max_age_days)
 
+    def load(src):
+        videos = [dict(v, source=src) for v in list_shorts(src, scan_limit)]
+        if enrich:
+            enrich(videos)
+        elif need_dates:
+            ytdlp_enrich(videos)
+        return videos
+
+    ranked = {}
+    opts = dict(sort_by=sort_by, max_age_days=max_age_days, min_views=min_views)
     if strategy == "rotate":
         picked, seen = [], set()
-        per_source = {}
         while len(picked) < count:
             progress = False
             for src in sources:
                 if len(picked) >= count:
                     break
-                if src not in per_source:
-                    per_source[src] = [dict(v, source=src) for v in list_shorts(src, scan_limit)]
-                for v in per_source[src]:
-                    if v["id"] not in seen and v["id"] not in exclude_ids and (v["view_count"] or 0) >= min_views:
+                if src not in ranked:
+                    ranked[src] = rank(load(src), **opts)
+                for v in ranked[src]:
+                    if v["id"] not in seen and v["id"] not in exclude_ids:
                         picked.append(v)
                         seen.add(v["id"])
                         progress = True
@@ -50,9 +83,8 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
 
     pool = []
     for src in sources:
-        pool += [dict(v, source=src) for v in list_shorts(src, scan_limit)]
-    pool.sort(key=lambda v: v["view_count"] or 0, reverse=True)
-    return fresh(pool)[:count]
+        pool += load(src)
+    return rank([v for v in pool if v["id"] not in exclude_ids], **opts)[:count]
 
 
 def prepare(video_url, work_dir, effects):

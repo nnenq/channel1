@@ -8,6 +8,7 @@ import shutil
 from dataclasses import dataclass, field
 
 from ..pipeline import build_text, pick, prepare
+from ..source import enrich
 
 SHORT_ID = re.compile(r"(?:shorts/|v=|youtu\.be/)([\w-]{11})")
 
@@ -51,8 +52,14 @@ def run_slot(db, settings, slot):
     if not project["token_path"]:
         return Result("failed", "не привязан канал для перезалива", auth_problem=True)
 
+    try:
+        youtube = youtube_client(project["token_path"])
+    except AuthError as e:
+        return Result("failed", str(e), auth_problem=True)
+
     # 1. Какое видео заливаем
     source_url = None
+    info = {}
     if slot["video_url"]:
         url = slot["video_url"]
         title_hint = slot.get("video_title") or ""
@@ -61,16 +68,22 @@ def run_slot(db, settings, slot):
         sources = db.sources_in_rotation_order(project["id"])
         if not sources:
             return Result("failed", "в проекте нет каналов-источников")
-        picked = pick(sources, db.uploaded_ids(project["id"]), count=1, strategy=project["strategy"])
+        try:
+            picked = pick(sources, db.uploaded_ids(project["id"]), count=1,
+                          strategy=project["strategy"], sort_by=project["sort_by"],
+                          max_age_days=project["max_age_days"],
+                          enrich=lambda vs: enrich(vs, youtube))
+        except Exception as e:  # noqa: BLE001
+            return Result("failed", "не удалось получить список видео: " + _error_text(e))
         if not picked:
-            return Result("skipped", "новых видео нет — всё уже перезалито", exhausted=True)
-        v = picked[0]
-        url, title_hint, views, source_url = v["url"], v["title"], v["view_count"], v["source"]
+            why = f" за последние {project['max_age_days']} дн." if project["max_age_days"] else ""
+            return Result("skipped", f"новых видео{why} нет — всё уже перезалито", exhausted=True)
+        info = picked[0]
+        url, title_hint, views, source_url = info["url"], info["title"], info["view_count"], info["source"]
 
     # 2. Скачать + уникализировать + залить
     work = settings.work_dir / f"p{project['id']}_s{slot['id']}"
     try:
-        youtube = youtube_client(project["token_path"])
         _, out, meta = prepare(url, work, project["effects"])
         title, description, tags = build_text(meta)
         new_id = upload(youtube, out, title, description, tags,
@@ -82,6 +95,13 @@ def run_slot(db, settings, slot):
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
-    db.add_upload(project["id"], source_url, meta["id"], meta["title"],
-                  views if views is not None else meta.get("view_count"), new_id)
-    return Result("done", f"https://youtube.com/shorts/{new_id}", title=meta["title"], new_id=new_id)
+    if not info.get("published") and meta.get("published"):
+        info = dict(info, published=meta["published"], duration=meta.get("duration"),
+                    view_count=meta.get("view_count"))
+    views = views if views is not None else meta.get("view_count")
+    db.add_upload(project["id"], source_url, meta["id"], meta["title"], views, new_id,
+                  info.get("published"))
+    return Result("done", f"https://youtube.com/shorts/{new_id}", title=meta["title"], new_id=new_id,
+                  extra={"views": views, "published": info.get("published"),
+                         "duration": info.get("duration") or meta.get("duration"),
+                         "views_per_day": info.get("views_per_day")})

@@ -11,6 +11,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+from . import fmt
 from .db import DB, iso, utcnow
 from .scheduler import Scheduler, describe_slot
 from .settings import load_settings
@@ -55,7 +56,7 @@ class BotApp:
         await self.notify_text(
             f"✅ <b>{esc(project['channel_title'] or project['name'])}</b>: залито "
             f"({PRIVACY_RU.get(project['privacy'], project['privacy'])})\n"
-            f"{esc(result.title)}\n{result.info}")
+            f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}\n{result.info}")
 
     async def failed(self, project, result, retry_at):
         tail = f"\nПопробую ещё раз в {retry_at:%H:%M}." if retry_at else ""
@@ -75,7 +76,7 @@ class BotApp:
     async def exhausted(self, project):
         rows = []
         for c in self.db.repost_candidates(project["id"], 3):
-            views = f" · {c['views']:,}".replace(",", " ") if c["views"] else ""
+            views = f" · {fmt.views(c['views'])}" if c["views"] else ""
             rows.append([{"text": f"🔁 {(c['title'] or c['video_id'])[:40]}{views}",
                           "callback_data": f"rp:{project['id']}:{c['video_id']}"}])
         btn = self.app_button("➕ Сменить/добавить каналы", f"#p{project['id']}")
@@ -87,7 +88,9 @@ class BotApp:
             f"всё уже перезалито.\n\nЧто делаем?\n"
             f"• 🔁 перезалить один из самых популярных роликов ещё раз;\n"
             f"• ➕ добавить или заменить каналы-источники;\n"
-            f"• ⏳ ждать — как только на каналах появятся новые шортсы, продолжу сам.", rows)
+            f"• ⏳ ждать — как только на каналах появятся новые шортсы, продолжу сам."
+            + (f"\n\nСейчас стоит фильтр «не старше {project['max_age_days']} дн.» — "
+               f"его можно увеличить в панели." if project["max_age_days"] else ""), rows)
 
     # ----- входящие сообщения -----
     async def handle(self, update):

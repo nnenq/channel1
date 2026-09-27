@@ -9,6 +9,8 @@ defaults:
   client_secret: client_secret.json
   per_run: 1              # сколько видео заливать за один запуск задачи
   strategy: rotate        # rotate = каналы-источники по очереди; top = общий топ
+  sort_by: views          # views = больше всего просмотров; per_day = просмотров в день (быстрее набирают)
+  max_age_days: 0         # брать только ролики не старше N дней (0 = любые)
   scan_limit: 200         # сколько последних шортсов канала просматривать
   min_views: 0            # не брать видео с просмотрами меньше этого
   privacy: public         # public | unlisted | private

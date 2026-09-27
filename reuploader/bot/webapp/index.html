@@ -96,6 +96,17 @@ const fixTime = v => {
   if (!m) return v;
   return String(+m[1]).padStart(2, "0") + ":" + String(+(m[2] || 0)).padStart(2, "0");
 };
+const fmtDate = iso => new Date(iso).toLocaleString("ru-RU", { timeZone: state.tz || undefined,
+  day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }).replace(",", "");
+const fmtDur = s => s ? Math.floor(s / 60) + ":" + String(Math.round(s % 60)).padStart(2, "0") : "";
+function fmtAgo(iso) {
+  const d = (Date.now() - Date.parse(iso)) / 864e5;
+  if (d < 1 / 24) return "только что";
+  if (d < 1) return Math.floor(d * 24) + " ч назад";
+  if (d < 60) return Math.floor(d) + " дн. назад";
+  if (d < 730) return Math.floor(d / 30) + " мес. назад";
+  return Math.floor(d / 365) + " г. назад";
+}
 const haptic = t => tg?.HapticFeedback?.notificationOccurred?.(t);
 
 function toast(msg) {
@@ -194,7 +205,19 @@ async function showProject(id, data) {
         <button class="${p.strategy === "rotate" ? "on" : ""}" onclick="patch({strategy:'rotate'})">Каналы по очереди</button>
         <button class="${p.strategy === "top" ? "on" : ""}" onclick="patch({strategy:'top'})">Общий топ</button></div></div>
     </div>
-    <div class="hint">Берётся самое просматриваемое видео, которое ещё не перезаливали. Можно вставить несколько ссылок через пробел.</div>
+    <div class="hint">Можно вставить несколько ссылок через пробел.</div>
+
+    <h2>Какие видео брать</h2>
+    <div class="card">
+      <div class="row"><div class="seg">
+        <button class="${p.sort_by === "views" ? "on" : ""}" onclick="patch({sort_by:'views'})">Больше всего просмотров</button>
+        <button class="${p.sort_by === "per_day" ? "on" : ""}" onclick="patch({sort_by:'per_day'})">Быстрее набирают</button></div></div>
+      <div class="row"><div class="grow">Не старше, дней<div class="sub">0 — любые</div></div>
+        <input class="num" type="number" min="0" value="${p.max_age_days}" onchange="patch({max_age_days:+this.value})"></div>
+    </div>
+    <div class="hint">${p.sort_by === "per_day"
+      ? "«Быстрее набирают» = просмотры ÷ дни с выхода. Ролик месяц назад с 2M ≈ 67K/день, ролик 2 дня назад с 1M ≈ 500K/день — возьмётся второй."
+      : "Берётся ролик с наибольшим числом просмотров за всё время, который ещё не перезаливали."}</div>
 
     <h2>Расписание</h2>
     <div class="card">
@@ -250,7 +273,7 @@ async function showProject(id, data) {
     <h2>История</h2>
     <div class="card">
       ${data.uploads.map(u => `<div class="row tap" onclick="openLink('${esc(u.url)}')"><div class="grow">
-        <div class="ellipsis">${esc(u.title)}</div><div class="sub">${u.at}${u.views ? " · ориг. " + fmtViews(u.views) + " просм." : ""}</div></div>
+        <div class="ellipsis">${esc(u.title)}</div><div class="sub">залит ${u.at}${u.views ? " · ориг. 👁 " + fmtViews(u.views) : ""}${u.published ? " · вышел " + fmtDate(u.published) : ""}</div></div>
         <span class="sub">↗</span></div>`).join("") || `<div class="empty">Пока ничего не залито</div>`}
     </div>
 
@@ -301,20 +324,41 @@ async function delProject() {
   if (await guarded(() => api("DELETE", `/api/projects/${pid()}`))) location.hash = "";
 }
 
+let topSort = null;
 async function loadTop(refresh) {
   const box = document.getElementById("top");
   box.innerHTML = `<div class="row"><span class="spin"></span><span class="sub">Смотрю каналы… (до минуты)</span></div>`;
   const d = await guarded(() => api("GET", `/api/projects/${pid()}/top${refresh ? "?refresh=1" : ""}`));
   if (!d) { box.innerHTML = ""; return; }
+  window._topData = d;
+  topSort = topSort || (state.project.sort_by === "per_day" ? "per_day" : "views");
+  renderTop();
+}
+const TOP_SORTS = {
+  views: [ "Просмотры", v => v.view_count || 0 ],
+  per_day: [ "В день", v => v.views_per_day ?? -1 ],
+  new: [ "Новые", v => v.published ? Date.parse(v.published) : 0 ],
+};
+function renderTop() {
+  const d = window._topData, box = document.getElementById("top");
+  const key = TOP_SORTS[topSort][1];
   window._top = {};
-  box.innerHTML = d.sources.map(s => `
+  box.innerHTML = `<div class="row"><div class="seg">${Object.entries(TOP_SORTS).map(([k, [label]]) =>
+      `<button class="${topSort === k ? "on" : ""}" onclick="topSort='${k}';renderTop()">${label}</button>`).join("")}</div></div>`
+    + (d.with_api ? "" : `<div class="hint" style="padding-bottom:6px">Даты есть только у первых 30 роликов — привяжи канал, чтобы видеть все.</div>`)
+    + d.sources.map(s => `
     <div class="row"><b class="grow">${esc(s.label)}</b></div>
     ${s.error ? `<div class="row sub">Ошибка: ${esc(s.error)}</div>` : ""}
-    ${s.videos.map(v => { window._top[v.id] = v; return `
+    ${[...s.videos].sort((a, b) => key(b) - key(a)).slice(0, 15).map(v => { window._top[v.id] = v; return `
       <div class="row tap vid" onclick="publishPrompt('${v.url}', '${v.id}')">
-        <div class="grow ellipsis">${esc(v.title)}</div>
+        <div class="grow" style="min-width:0"><div class="ellipsis">${esc(v.title)}</div>
+          <div class="sub">${[
+            v.published ? "📅 " + fmtDate(v.published) + " · " + fmtAgo(v.published) : "",
+            v.duration ? "⏱ " + fmtDur(v.duration) : "",
+            v.views_per_day != null ? "≈" + fmtViews(v.views_per_day) + "/день" : "",
+          ].filter(Boolean).join(" · ")}</div></div>
         ${v.uploaded ? `<span class="badge ok">залито</span>` : ""}
-        <span class="views">${fmtViews(v.view_count)}</span></div>`; }).join("")}`).join("")
+        <span class="views">👁 ${fmtViews(v.view_count)}</span></div>`; }).join("")}`).join("")
     + `<div class="row"><button class="ghost" onclick="loadTop(true)">↻ Обновить</button></div>`;
 }
 

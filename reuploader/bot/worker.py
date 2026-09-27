@@ -125,6 +125,7 @@ def run_slot(db, settings, slot):
     # 1. Какое видео берём
     source_url = None
     info = {}
+    skipped_sources = {}
     if slot["video_url"]:
         url = slot["video_url"]
         title_hint = slot.get("video_title") or ""
@@ -149,6 +150,7 @@ def run_slot(db, settings, slot):
             return Result("skipped", f"новых видео{why} нет — всё уже перезалито", exhausted=True)
         info = picked[0]
         url, title_hint, views, source_url = info["url"], info["title"], info["view_count"], info["source"]
+        skipped_sources = {src: str(e).splitlines()[0][:200] for src, e in getattr(pick, "errors", {}).items()}
 
     # 2. Скачать + (подогнать длину) + уникализировать + (залить)
     work = settings.work_dir / f"p{project['id']}_s{slot['id']}"
@@ -196,7 +198,8 @@ def run_slot(db, settings, slot):
              "duration": info.get("duration") or meta.get("duration"),
              "views_per_day": info.get("views_per_day"),
              "trend_per_day": info.get("trend_per_day"), "hot": info.get("hot"),
-             "description": description, "tags": tags, "source_url": url, "fit": meta.get("fit")}
+             "description": description, "tags": tags, "source_url": url, "fit": meta.get("fit"),
+             "skipped_sources": skipped_sources}
     if keep:
         extra.update(file=str(out), work=str(work))
     link = f"https://youtube.com/shorts/{new_id}" if new_id else "отправлено тебе в Telegram"

@@ -87,6 +87,8 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
     по просмотрам; "views" — по просмотрам всего; "per_day" — в среднем в день.
     enrich(videos) — добавляет даты/просмотры в день (см. source.enrich);
     trend(videos, source) — записывает замер просмотров и добавляет trend_per_day.
+    Нечитаемый источник пропускается (ошибка сохраняется в pick.errors); исключение —
+    только если не прочитался ни один источник.
     Возвращает список словарей с ключами id, title, view_count, url, source, ...
     """
     from .source import enrich as ytdlp_enrich
@@ -94,8 +96,16 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
 
     need_dates = sort_by in ("per_day", "trend") or bool(max_age_days or min_duration or max_duration)
 
+    errors = {}
+
     def load(src):
-        videos = [dict(v, source=src) for v in list_shorts(src, scan_limit)]
+        try:
+            videos = [dict(v, source=src) for v in list_shorts(src, scan_limit)]
+        except Exception as e:  # noqa: BLE001 — один сломанный источник не мешает остальным
+            errors[src] = e
+            if len(errors) == len(sources):
+                raise
+            return []
         if enrich:
             enrich(videos)
         elif need_dates:
@@ -124,11 +134,13 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
                         break
             if not progress:
                 break
+        pick.errors = errors
         return picked
 
     pool = []
     for src in sources:
         pool += load(src)
+    pick.errors = errors
     return rank([v for v in pool if v["id"] not in exclude_ids], **opts)[:count]
 
 

@@ -68,3 +68,19 @@ def test_snapshot_skips_broken_channel():
         return [{"id": "x", "view_count": 1}]
     trends.snapshot_all(db, list_shorts, None, None)
     assert recorded == ["good"]
+
+
+def test_broken_source_is_skipped_others_used(monkeypatch):
+    from reuploader import pipeline
+
+    def list_shorts(url, n):
+        if "tiktok" in url:
+            raise source.TikTokIdError("TikTok не отдаёт список")
+        return [{"id": "yt1", "title": "a", "view_count": 5, "url": "u/yt1", "duration": 30}]
+    monkeypatch.setattr(source, "list_shorts", list_shorts)
+    got = pipeline.pick(["https://www.tiktok.com/@x", "https://www.youtube.com/@y"], set(), strategy="rotate")
+    assert got[0]["id"] == "yt1" and "https://www.tiktok.com/@x" in pipeline.pick.errors
+    got = pipeline.pick(["https://www.tiktok.com/@x", "https://www.youtube.com/@y"], set(), strategy="top")
+    assert got[0]["id"] == "yt1"
+    with pytest.raises(source.TikTokIdError):         # единственный источник сломан — честная ошибка
+        pipeline.pick(["https://www.tiktok.com/@x"], set())

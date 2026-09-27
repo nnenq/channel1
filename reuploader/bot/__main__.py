@@ -124,7 +124,8 @@ class BotApp:
                if result.extra.get("publish_at")
                else f"залито ({PRIVACY_RU.get(project['privacy'], project['privacy'])})") + "\n"
             f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}"
-            f"{esc(fmt.fit_line(result.extra))}\n{result.info}", project=project)
+            f"{esc(fmt.fit_line(result.extra))}{esc(fmt.skipped_sources_line(result.extra))}\n{result.info}",
+            project=project)
 
     async def video(self, project, result):
         """Обработанное видео — всем, у кого есть доступ, с текстом для ручной публикации."""

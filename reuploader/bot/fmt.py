@@ -52,6 +52,14 @@ def fit_line(extra):
     return f"\n✂️ Длина подогнана: {duration(fit['before'])} → {duration(fit['after'])}"
 
 
+def skipped_sources_line(extra):
+    bad = extra.get("skipped_sources") or {}
+    if not bad:
+        return ""
+    names = ", ".join(u.rsplit("/", 1)[-1] for u in bad)
+    return f"\n⚠️ Не прочитались источники: {names} — взял ролик из остальных"
+
+
 def original_line(extra, tz):
     """Строка про оригинал: просмотры · дата выхода (сколько назад) · длительность · в день."""
     when, age = published(extra.get("published"), tz)

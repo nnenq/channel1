@@ -12,6 +12,10 @@ rem YouTube часто меняет сайт - обновляем загрузч
 
 :loop
 .venv\Scripts\python -m reuploader.bot
+if errorlevel 3 if not errorlevel 4 (
+  pause
+  exit /b 3
+)
 echo.
 echo Бот остановился. Перезапуск через 15 секунд (закрой окно, чтобы выключить совсем)...
 timeout /t 15 >nul

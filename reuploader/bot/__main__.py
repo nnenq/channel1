@@ -396,7 +396,11 @@ async def main():
 
         runner = web.AppRunner(WebApp(db, s, sched, bot).build(), access_log=None)
         await runner.setup()
-        await web.TCPSite(runner, "127.0.0.1", s.port).start()
+        try:
+            await web.TCPSite(runner, "127.0.0.1", s.port).start()
+        except OSError as e:
+            await runner.cleanup()
+            raise AlreadyRunning(s.port) from e
         log.info("веб-сервер: %s", s.local_url)
 
         url_changed = False
@@ -433,8 +437,17 @@ async def main():
             await runner.cleanup()
 
 
+class AlreadyRunning(Exception):
+    pass
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+    except AlreadyRunning as e:
+        print(f"\n  ⚠️ Порт {e.args[0]} занят — скорее всего бот УЖЕ запущен в другом окне\n"
+              f"  (или свёрнут после автозапуска). Оставь одно окно бота, это можно закрыть.\n"
+              f"  Если других окон нет: Диспетчер задач -> процессы Python -> Снять задачу.\n", flush=True)
+        sys.exit(3)

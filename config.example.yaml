@@ -1,0 +1,50 @@
+# Скопируй в config.yaml и поправь под себя:  cp config.example.yaml config.yaml
+#
+# Каждая "задача" (job) = один целевой канал, куда заливаем,
+# и список исходных каналов, откуда берём самые просматриваемые шортсы.
+# Чтобы масштабироваться — просто добавляй новые задачи.
+
+defaults:
+  # OAuth-клиент из Google Cloud Console (тип "Desktop app")
+  client_secret: client_secret.json
+  per_run: 1              # сколько видео заливать за один запуск задачи
+  scan_limit: 200         # сколько последних шортсов канала просматривать
+  min_views: 0            # не брать видео с просмотрами меньше этого
+  privacy: public         # public | unlisted | private
+  category_id: "24"       # 24 = Entertainment
+  made_for_kids: false
+  # {title} — оригинальное название; можно дописывать своё
+  title_template: "{title}"
+  description_template: "{description}\n\n#shorts"
+  keep_tags: true
+  extra_tags: [shorts]
+
+  # Уникализация (всё можно менять/выключать на уровне задачи)
+  effects:
+    zoom: 1.05            # увеличение изображения (1.0 = выкл)
+    rotate_deg: -0.5      # поворот в градусах
+    shadows: 0.10         # осветлить тени на 10% (0 = выкл)
+    edge_blur:
+      height: 0.10        # доля высоты кадра сверху и снизу
+      sigma: 18           # сила размытия (0 = выкл)
+    crf: 20               # качество x264 (меньше = лучше, больше файл)
+    strip_metadata: true
+
+jobs:
+  - name: happyflick
+    # токен целевого канала создаётся командой:
+    #   python -m reuploader auth --token tokens/happyflick.json
+    token: tokens/happyflick.json
+    sources:
+      - https://www.youtube.com/@HappyFlick-b4e/shorts
+
+  # Пример второй задачи — раскомментируй для масштабирования:
+  # - name: second
+  #   token: tokens/second.json
+  #   per_run: 2
+  #   privacy: unlisted
+  #   sources:
+  #     - https://www.youtube.com/@MyOtherChannel/shorts
+  #   effects:
+  #     zoom: 1.07
+  #     rotate_deg: 0.5

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+# секреты и токены — никогда не коммитить
+client_secret*.json
+tokens/
+# рабочие файлы
+work/
+state/
+config.yaml

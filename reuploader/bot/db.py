@@ -103,8 +103,29 @@ CREATE TABLE IF NOT EXISTS cut_jobs (
     dl_token TEXT,
     delete_at TEXT,
     tg_message_id INTEGER,
+    mode TEXT NOT NULL DEFAULT 'free',
+    ai_state TEXT,
+    estimate TEXT,
     created_at TEXT NOT NULL,
     finished_at TEXT
+);
+-- Каждый платный запрос к Claude: токены и стоимость по ценам из pricing.yaml
+CREATE TABLE IF NOT EXISTS ai_usage (
+    id INTEGER PRIMARY KEY,
+    at TEXT NOT NULL,
+    user_id INTEGER,
+    job_id INTEGER,
+    model TEXT,
+    input_tokens INTEGER, output_tokens INTEGER, cache_write INTEGER, cache_read INTEGER,
+    usd REAL NOT NULL
+);
+-- Пополнения баланса Claude API (вводит админ)
+CREATE TABLE IF NOT EXISTS topups (
+    id INTEGER PRIMARY KEY,
+    amount REAL NOT NULL,
+    date TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL
 );
 -- Замеры просмотров роликов каналов-источников: по ним считается прирост "сейчас"
 CREATE TABLE IF NOT EXISTS view_snapshots (
@@ -125,6 +146,9 @@ MIGRATIONS = [
     ("uploads", "published", "TEXT"),
     ("projects", "delivery", "TEXT NOT NULL DEFAULT 'youtube'"),
     ("projects", "user_id", "INTEGER"),
+    ("cut_jobs", "mode", "TEXT NOT NULL DEFAULT 'free'"),
+    ("cut_jobs", "ai_state", "TEXT"),
+    ("cut_jobs", "estimate", "TEXT"),
     ("projects", "min_duration", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "max_duration", "INTEGER NOT NULL DEFAULT 0"),
 ]
@@ -371,6 +395,27 @@ class DB:
 
     def expired_cut_jobs(self, now_iso):
         return self.q("SELECT * FROM cut_jobs WHERE delete_at IS NOT NULL AND delete_at <= ?", now_iso)
+
+    # --- расходы на Claude и пополнения ---
+    def add_ai_usage(self, user_id, job_id, u):
+        self.x("""INSERT INTO ai_usage(at, user_id, job_id, model, input_tokens, output_tokens,
+                                       cache_write, cache_read, usd) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               iso(utcnow()), user_id, job_id, u["model"], u["input_tokens"], u["output_tokens"],
+               u["cache_write"], u["cache_read"], u["usd"])
+
+    def ai_spent(self, since_iso=None):
+        row = self.one("SELECT COALESCE(SUM(usd), 0) AS s FROM ai_usage WHERE at >= ?", since_iso or "")
+        return float(row["s"])
+
+    def topups(self):
+        return self.q("SELECT * FROM topups ORDER BY date, id")
+
+    def add_topup(self, amount, date, note=None):
+        return self.x("INSERT INTO topups(amount, date, note, created_at) VALUES(?, ?, ?, ?)",
+                      amount, date, note, iso(utcnow()))
+
+    def delete_topup(self, tid):
+        self.x("DELETE FROM topups WHERE id = ?", tid)
 
     # --- замеры просмотров ---
     def last_snapshot_at(self, channel):

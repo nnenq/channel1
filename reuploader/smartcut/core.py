@@ -74,7 +74,12 @@ def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=Non
         progress("оценка фрагментов", 0.5)
         score_heuristic(beats, analysis)
         if scorer:
+            progress("AI-оценка", 0.52)
             scorer(beats, analysis)
+            if getattr(scorer, "last_cost", None) is not None:
+                report["ai_cost"] = scorer.last_cost
+            if getattr(scorer, "note", None):
+                report["warnings"].append(scorer.note)
         select.mark_required(beats, hook_min=hook[0], hook_max=hook[1])
 
         progress("отбор", 0.55)
@@ -136,6 +141,38 @@ def smart_cut(src, dst, target_sec, tolerance=0.05, transcriber=None, scorer=Non
             shutil.rmtree(work, ignore_errors=True)
 
 
+def prepare_beats(src, transcriber=None, work_dir=None):
+    """Разметка и биты без рендера — для оценки стоимости AI-режима. -> (info, beats)."""
+    own_tmp = work_dir is None
+    work = Path(work_dir or tempfile.mkdtemp(prefix="smartcut_"))
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        info = probe(src)
+        analysis = an.analyze(src, info, load_audio(src, work), transcriber)
+        beats = bt.make_beats(analysis, bt.cut_points(analysis))
+        score_heuristic(beats, analysis)
+        return info, beats
+    finally:
+        if own_tmp:
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def cached_transcriber(transcriber, cache_path):
+    """Сохраняет распознанные слова в JSON: повторный прогон (после «Да» в AI-режиме) не
+    запускает whisper заново."""
+    import json
+
+    def run(path):
+        p = Path(cache_path)
+        if p.exists():
+            return [an.Word(**w) for w in json.loads(p.read_text(encoding="utf-8"))]
+        words = transcriber(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps([w.__dict__ for w in words], ensure_ascii=False), encoding="utf-8")
+        return words
+    return run
+
+
 def fmt_time(t):
     return f"{int(t // 60)}:{t % 60:04.1f}"
 
@@ -150,6 +187,8 @@ def format_report(r):
              f"Резов: {len(r['cuts'])}, все в паузах речи"
              + (f" ({sum(c['scene'] for c in r['cuts'])} совпали со сменой кадра)" if r["cuts"] else ""),
              "Хук в начале и финал сохранены." if r.get("hook_kept") else ""]
+    if r.get("ai_cost") is not None:
+        lines.append(f"🤖 AI-анализ: фактически ${r['ai_cost']:.4f}")
     if r["removed"]:
         lines.append("\nВырезано:")
         for x in r["removed"]:

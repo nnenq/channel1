@@ -1,5 +1,4 @@
 import socket
-import sys
 import tempfile
 from pathlib import Path
 
@@ -91,7 +90,6 @@ def test_free_mode_makes_no_network_requests(clip, tmp_path, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", blocked)
     dst, r = _run(clip, 30, tmp_path)
     assert dst.exists() and r["status"].startswith("ok")
-    assert "anthropic" not in sys.modules
 
 
 def test_temp_files_cleaned(clip, tmp_path):

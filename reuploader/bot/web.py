@@ -118,7 +118,7 @@ class WebApp:
                 return web.json_response({"error": "Открой панель из Telegram-бота."}, status=401)
             if not self.bot.has_access(user.get("id")):
                 return web.json_response({"error": "Нет доступа — попроси владельца бота."}, status=403)
-            if request.path.startswith("/api/access") and user.get("id") != self.bot.owner_id:
+            if request.path.startswith(("/api/access", "/api/balance")) and user.get("id") != self.bot.owner_id:
                 return web.json_response({"error": "Доступом управляет только владелец."}, status=403)
             request["user"] = user
         try:

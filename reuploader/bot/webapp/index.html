@@ -169,9 +169,39 @@ async function showHome() {
       <input id="newName" class="grow" placeholder="Название, напр. HappyFlick 2">
       <button onclick="createProject()">Создать</button></div></div>
     <div class="hint">Время: ${esc(data.tz)}, сейчас ${data.now}</div>
+    ${data.is_owner ? `<h2>💳 Баланс Claude API</h2><div class="card" id="balance"><div class="row"><span class="spin"></span></div></div>` : ""}
     ${data.is_owner ? `<h2>Доступ к боту</h2><div class="card" id="access"><div class="row"><span class="spin"></span></div></div>
     <div class="hint">Кроме тебя ботом пользуются только те, кому ты дал доступ: они видят все проекты и получают уведомления. Незнакомцы могут лишь отправить тебе запрос.</div>` : ""}`;
-  if (data.is_owner) loadAccess();
+  if (data.is_owner) { loadAccess(); loadBalance(); }
+}
+
+async function loadBalance(d) {
+  d = d || await api("GET", "/api/balance").catch(() => null);
+  const box = document.getElementById("balance");
+  if (!d || !box) return;
+  const when = new Date(d.updated_at).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  box.innerHTML = `<div class="row"><div class="grow">${d.remaining == null
+      ? `<span class="sub">Внеси пополнение — тогда посчитаю остаток.</span>`
+      : `Остаток ≈ <b style="color:${d.remaining < d.threshold ? "var(--danger)" : "inherit"}">$${d.remaining.toFixed(2)}</b>
+         <div class="sub">пополнено $${d.topped.toFixed(2)} − потрачено $${d.spent.toFixed(2)} · ${esc(d.source)}, ${when}</div>`}</div></div>
+    ${d.topups.map(t => `<div class="row"><div class="grow">+$${t.amount.toFixed(2)} <span class="sub">${t.date}${t.note ? " · " + esc(t.note) : ""}</span></div>
+      <button class="x" onclick="delTopup(${t.id})">×</button></div>`).join("")}
+    <div class="row"><input id="tuAmount" class="num" placeholder="$" style="width:80px">
+      <input id="tuDate" type="date" value="${new Date().toISOString().slice(0, 10)}" class="grow">
+      <button onclick="addTopup()">Пополнил</button></div>
+    <div class="hint" style="padding-bottom:10px">Примерно: точная сумма — console.anthropic.com → Billing.
+      ${d.admin_key ? "Расходы берутся из Anthropic Console раз в час." : "Расходы считает бот по своим запросам."}
+      ${d.ai_enabled ? "" : " AI-режим выключен: в .env нет ANTHROPIC_API_KEY."}</div>`;
+}
+async function addTopup() {
+  const d = await guarded(() => api("POST", "/api/balance/topup", {
+    amount: document.getElementById("tuAmount").value, date: document.getElementById("tuDate").value }));
+  if (d) { haptic("success"); loadBalance(d); }
+}
+async function delTopup(id) {
+  if (!await confirmMsg("Удалить это пополнение?")) return;
+  const d = await guarded(() => api("DELETE", `/api/balance/topup/${id}`));
+  if (d) loadBalance(d);
 }
 
 const ACCESS_BADGE = { pending: ["warn", "ждёт"], allowed: ["ok", "есть доступ"], blocked: ["", "заблокирован"] };
@@ -487,6 +517,7 @@ function askTime(run) {
 // ---------- умная обрезка ----------
 let cutPoll = null, cutMeta = null;
 const CUT_STATUS = { uploading: "загрузка", uploaded: "загружено — выбери длину", queued: "в очереди",
+  confirm: "жду подтверждения AI-анализа",
   running: "обрабатываю", done: "готово", failed: "ошибка" };
 const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + " МБ" : Math.round(b / 1024) + " КБ";
 const progressBar = f => `<div style="height:8px;background:var(--sep);border-radius:4px;overflow:hidden">
@@ -554,7 +585,7 @@ function renderJob(j) {
   clearTimeout(cutPoll);
   let html = `<div class="card"><div class="row"><div class="grow" style="min-width:0"><b class="ellipsis">${esc(j.filename)}</b>
     <div class="sub">${CUT_STATUS[j.status] || j.status}${j.stage && j.status !== "done" ? " · " + esc(j.stage) : ""}</div></div></div>`;
-  if (["queued", "running"].includes(j.status)) {
+  if (["queued", "running"].includes(j.status) || (j.status === "confirm" && !j.estimate)) {
     html += `<div class="row" style="flex-direction:column;align-items:stretch;gap:6px">${progressBar(j.progress || 0)}
       <div class="sub">${Math.round((j.progress || 0) * 100)}% · результат пришлю и в чат</div></div>`;
     cutPoll = setTimeout(async () => { const r = await api("GET", `/api/cut/${j.id}`).catch(() => null); if (r) renderJob(r); }, 2000);
@@ -567,7 +598,18 @@ function renderJob(j) {
         <button id="tm_channel" onclick="cutMode('channel')">Как на канале</button>
         <button id="tm_list" onclick="cutMode('list')">Список</button></div></div>
       <div id="tmBox"></div>
+      ${cutMeta?.ai_available ? `<div class="row"><label style="display:flex;gap:8px;align-items:center">
+        <input type="checkbox" id="tmAi"> 🤖 AI-анализ Claude (платно — сначала покажу цену)</label></div>` : ""}
       <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>`;
+  }
+  if (j.status === "confirm" && j.estimate) {
+    const e = j.estimate;
+    html += `<div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+      <div>🤖 AI-анализ будет стоить примерно <b>$${e.usd.toFixed(3)}</b> (≈ ${Math.round(e.rub)} ₽)</div>
+      <div class="sub">${e.input_tokens} + ${e.output_tokens} токенов, ${esc(e.model)}${e.remaining != null ? ` · на счёте ≈ $${e.remaining.toFixed(2)}` : ""}</div>
+      ${e.affordable ? `<button onclick="decideAi(${j.id}, true)">✅ Да, продолжить</button>`
+        : `<div class="sub" style="color:var(--danger)">Недостаточно средств на счёте Claude.</div>`}
+      <button class="ghost" onclick="decideAi(${j.id}, false)">Нет, бесплатный режим</button></div>`;
   }
   if (j.status === "done" && j.report_text) {
     html += `<div class="row" style="white-space:pre-wrap;font-size:14px;line-height:1.45">${esc(j.report_text)}</div>`;
@@ -577,6 +619,11 @@ function renderJob(j) {
   html += `</div>`;
   box.innerHTML = html;
   if (document.getElementById("tmBox")) cutMode("manual");
+}
+
+async function decideAi(jid, yes) {
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/ai`, { yes }));
+  if (r) { haptic("success"); renderJob(r); }
 }
 
 let cutModeCur = "manual";
@@ -598,6 +645,7 @@ async function runCut(jid) {
   if (cutModeCur === "manual") body.seconds = document.getElementById("tmSec").value;
   if (cutModeCur === "channel") body.url = document.getElementById("tmUrl").value;
   if (cutModeCur === "list") body.text = document.getElementById("tmList").value;
+  body.ai = !!document.getElementById("tmAi")?.checked;
   const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, body));
   if (r) { haptic("success"); renderJob(r); }
 }

@@ -282,6 +282,21 @@ class BotApp:
         data = cq.get("data", "")
         user = cq.get("from", {})
         answer = "Готово"
+        if data.startswith(("ai_yes:", "ai_no:")):
+            job = self.db.cut_job(int(data.split(":")[1]))
+            if not job or job["user_id"] != user.get("id"):
+                answer = "Нет доступа"
+            else:
+                ok, answer = self.cut.decide_ai(job, data.startswith("ai_yes:"))
+                if ok and cq.get("message"):
+                    m = cq["message"]
+                    try:
+                        await self.tg.call("editMessageReplyMarkup", chat_id=m["chat"]["id"],
+                                           message_id=m["message_id"], reply_markup={"inline_keyboard": []})
+                    except Exception:  # noqa: BLE001
+                        pass
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
         if data.startswith(("acc:", "dec:")) and user.get("id") == self.owner_id:
             uid = int(data[4:])
             known = self.db.user(uid) or {}

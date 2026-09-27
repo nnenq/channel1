@@ -13,8 +13,13 @@ from datetime import timedelta
 from functools import partial
 from pathlib import Path
 
+import os
+
 from ..smartcut import CutError, format_report, smart_cut
+from ..smartcut import ai as smart_ai
 from ..smartcut.analyze import whisper_transcribe
+from ..smartcut.core import cached_transcriber, prepare_beats
+from .balance import Balance, ai_enabled
 from .db import from_iso, iso, utcnow
 from .telegram import esc
 
@@ -32,12 +37,25 @@ def bar(frac, width=12):
     return "▓" * n + "░" * (width - n)
 
 
+def ai_model():
+    return os.getenv("CUT_AI_MODEL", smart_ai.DEFAULT_MODEL)
+
+
 class CutWorker:
     def __init__(self, db, settings, bot):
         self.db = db
         self.s = settings
-        self.bot = bot           # BotApp: tg, app_button, public_url
+        self.bot = bot           # BotApp: tg, app_button, public_url, owner_id
+        self.balance = Balance(db)
         self.wake = asyncio.Event()
+
+    def ai_allowed(self, uid):
+        """AI-режим тратит деньги владельца: по умолчанию только ему (CUT_AI_FOR_ALL=1 — всем)."""
+        return ai_enabled() and (uid == self.bot.owner_id or os.getenv("CUT_AI_FOR_ALL") == "1")
+
+    def transcriber(self, jid):
+        return cached_transcriber(partial(whisper_transcribe, model_size=self.s.whisper_model),
+                                  job_dir(self.s, jid) / "words.json")
 
     def poke(self):
         self.wake.set()
@@ -47,6 +65,9 @@ class CutWorker:
         self.db.x("UPDATE cut_jobs SET status = 'queued', stage = 'в очереди' WHERE status = 'running'")
         while True:
             try:
+                await self.balance.refresh_admin()
+                if self.bot.owner_id:
+                    await self.balance.check_low(lambda text: self.bot.tg.send(self.bot.owner_id, text))
                 await self.cleanup()
                 job = self.db.next_cut_job()
                 if job:
@@ -63,6 +84,58 @@ class CutWorker:
             self.wake.clear()
 
     async def run(self, job):
+        if job["mode"] == "ai" and job["ai_state"] != "confirmed":
+            return await self.estimate(job)
+        return await self.cut(job)
+
+    async def estimate(self, job):
+        """AI-режим, шаг 1: локальная разметка + оценка цены. Никаких платных запросов."""
+        jid, uid = job["id"], job["user_id"]
+        self.db.update_cut_job(jid, status="running", stage="оцениваю стоимость AI-анализа", progress=0.05)
+        try:
+            _, beats = await asyncio.get_running_loop().run_in_executor(
+                None, partial(prepare_beats, job["src_path"], self.transcriber(jid), job_dir(self.s, jid) / "tmp"))
+            est = smart_ai.estimate(beats, ai_model())
+        except Exception as e:  # noqa: BLE001
+            log.exception("оценка %s", jid)
+            return await self._fail(job, f"{type(e).__name__}: {e}", None)
+        finally:
+            shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
+        ok, bal = self.balance.can_afford(est["usd"])
+        est["affordable"] = ok
+        est["remaining"] = bal["remaining"]
+        self.db.update_cut_job(jid, status="confirm", ai_state="awaiting", stage="жду подтверждения",
+                               estimate=json.dumps(est))
+        price = f"≈ ${est['usd']:.3f} (≈ {est['rub']:.0f} ₽)"
+        if not ok:
+            text = (f"🤖 AI-анализ «{esc(job['filename'])}» будет стоить {price}, а на счёте Claude "
+                    f"≈ ${bal['remaining']:.2f}. Не запускаю — могу обрезать бесплатно.")
+            buttons = [[{"text": "✂️ Бесплатный режим", "callback_data": f"ai_no:{jid}"}]]
+        else:
+            text = (f"🤖 AI-анализ «{esc(job['filename'])}» будет стоить примерно {price} "
+                    f"({est['input_tokens']:,} + {est['output_tokens']:,} токенов, {est['model']}).\n"
+                    f"Продолжить?").replace(",", " ")
+            buttons = [[{"text": "✅ Да", "callback_data": f"ai_yes:{jid}"},
+                        {"text": "Нет, бесплатный режим", "callback_data": f"ai_no:{jid}"}]]
+        await self.bot.tg.send(uid, text, buttons)
+
+    def decide_ai(self, job, yes):
+        """Решение пользователя по AI-режиму. -> (ok, текст)."""
+        if job["status"] != "confirm" or job["ai_state"] != "awaiting":
+            return False, "Уже неактуально"
+        if yes:
+            est = json.loads(job["estimate"] or "{}")
+            ok, bal = self.balance.can_afford(est.get("usd", 0))
+            if not ok or not self.ai_allowed(job["user_id"]):
+                return False, "Недостаточно средств на счёте Claude — выбери бесплатный режим"
+            self.db.update_cut_job(job["id"], status="queued", ai_state="confirmed", stage="в очереди (AI)")
+        else:
+            self.db.update_cut_job(job["id"], status="queued", mode="free", ai_state="declined",
+                                   stage="в очереди")
+        self.poke()
+        return True, "Запускаю AI-анализ" if yes else "Режу бесплатно"
+
+    async def cut(self, job):
         jid, uid = job["id"], job["user_id"]
         self.db.update_cut_job(jid, status="running", stage="старт", progress=0)
         msg = await self.bot.tg.send(uid, f"✂️ Обрезаю «{esc(job['filename'])}»…\n{bar(0)} 0%")
@@ -86,11 +159,19 @@ class CutWorker:
                                      f"✂️ Обрезаю «{esc(job['filename'])}»…\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
 
         out = job_dir(self.s, jid) / "out.mp4"
+        scorer = None
+        # Платный запрос возможен ТОЛЬКО после явного «Да» пользователя (ai_state == confirmed)
+        if job["mode"] == "ai" and job["ai_state"] == "confirmed" and self.ai_allowed(uid):
+            import anthropic
+
+            scorer = smart_ai.make_scorer(
+                anthropic.Anthropic(), ai_model(),
+                usage_log=lambda u: self.db.add_ai_usage(uid, jid, u))
         tick = asyncio.create_task(ticker())
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
                 smart_cut, job["src_path"], out, job["target"], progress=progress,
-                transcriber=partial(whisper_transcribe, model_size=self.s.whisper_model),
+                transcriber=self.transcriber(jid), scorer=scorer,
                 work_dir=job_dir(self.s, jid) / "tmp"))
         except CutError as e:
             await self._fail(job, str(e), msg)

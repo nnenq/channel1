@@ -11,3 +11,4 @@ curl_cffi>=0.7
 # умная обрезка
 numpy>=1.26
 faster-whisper>=1.0
+anthropic>=0.70

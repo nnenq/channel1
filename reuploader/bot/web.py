@@ -31,6 +31,16 @@ PRIVACY = {"public", "unlisted", "private", "scheduled"}
 TOP_CACHE_TTL = 20 * 60
 
 
+def normalize_video(raw):
+    m = VIDEO_RE.search(str(raw))
+    tt = TIKTOK_VIDEO_RE.search(str(raw))
+    if m:
+        return f"https://www.youtube.com/shorts/{m.group(1)}"
+    if tt:
+        return f"https://www.tiktok.com/@{tt.group(1)}/video/{tt.group(2)}"
+    return None
+
+
 def normalize_channel(url):
     """Ссылка на канал -> https://www.youtube.com/@handle (/channel/UC...) или https://www.tiktok.com/@handle."""
     url = url.strip()
@@ -82,10 +92,12 @@ class WebApp:
 
     # ---------- сборка приложения ----------
     def build(self):
-        app = web.Application(middlewares=[self.auth_mw])
+        app = web.Application(middlewares=[self.auth_mw], client_max_size=9 * 1024 * 1024)
         r = app.router
         r.add_get("/", self.root)
         r.add_get("/app", self.index)
+        r.add_get("/assets/covers.js", lambda request: web.FileResponse(WEBAPP_DIR / "covers.js",
+                                                                      headers={"Cache-Control": "no-store"}))
         r.add_get("/healthz", lambda request: web.Response(text="shortsbot-ok"))
         r.add_get("/api/projects", self.list_projects)
         r.add_post("/api/projects", self.create_project)
@@ -104,6 +116,8 @@ class WebApp:
         from . import cut_api
 
         cut_api.setup(self, r)
+        from . import cover_api
+        self.covers = cover_api.setup(self, app)
         r.add_get("/api/access", self.access_list)
         r.add_post("/api/access/invite", self.access_invite)
         r.add_post("/api/access/{uid}", self.access_change)
@@ -221,7 +235,7 @@ class WebApp:
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
-                "sort_by", "max_age_days", "min_duration", "max_duration", "delivery",
+                "sort_by", "max_age_days", "min_duration", "max_duration", "delivery", "cover_mode", "cover_style",
                 "fit_mode", "fit_seconds", "fit_cached", "fit_min", "fit_max",
                 "channel_title", "channel_id")} | {
                                                    "linked": bool(p["token_path"]),
@@ -242,6 +256,15 @@ class WebApp:
         p = self._project(request)
         body = await request.json()
         upd = {}
+        if "cover_mode" in body:
+            if body["cover_mode"] not in ("off", "auto"):
+                raise ApiError("Неизвестный режим обложки.")
+            upd["cover_mode"] = body["cover_mode"]
+        if "cover_style" in body:
+            from ..covers import STYLES
+            if body["cover_style"] not in STYLES:
+                raise ApiError("Неизвестный стиль обложки.")
+            upd["cover_style"] = body["cover_style"]
         if "name" in body:
             upd["name"] = str(body["name"]).strip()[:60] or p["name"]
         if "enabled" in body:
@@ -437,6 +460,7 @@ class WebApp:
         else:
             raise ApiError("Нужна ссылка на видео YouTube или TikTok.")
         title = (body.get("title") or "")[:200] or None
+        publication_title = str(body.get("publication_title") or "").strip()[:100] or None
         when = body.get("when", "now")
         now = datetime.now(self.s.tz)
 
@@ -445,7 +469,17 @@ class WebApp:
                         if s["status"] == "planned" and not s["video_url"]), None)
             if not nxt:
                 raise ApiError("Нет свободных запланированных слотов — выбери время вручную.")
-            self.db.x("UPDATE slots SET video_url = ?, video_title = ? WHERE id = ?", url, title, nxt["id"])
+            cover_path, cover_choice = await self.covers.selection(p["id"], url, body)
+            with self.db.lock:
+                changed = self.db.conn.execute(
+                    "UPDATE slots SET video_url=?, video_title=?, cover_path=?, cover_choice=?, publication_title=? "
+                    "WHERE id=? AND status='planned' AND video_url IS NULL",
+                    (url, title, cover_path, cover_choice, publication_title, nxt["id"])).rowcount
+            if not changed:
+                if cover_path:
+                    Path(cover_path).unlink(missing_ok=True)
+                raise ApiError("Слот уже занят — выбери другой.", 409)
+            self.sched.poke()
             return web.json_response({"ok": True, "at": self._slot_json(nxt)["at"]})
 
         if when == "now":
@@ -457,7 +491,9 @@ class WebApp:
                 raise ApiError("Неверная дата/время.") from None
             if at < now - timedelta(minutes=1):
                 raise ApiError("Это время уже прошло.")
-        self.db.add_slot(p["id"], at.date().isoformat(), iso(at), "manual", url, title)
+        cover_path, cover_choice = await self.covers.selection(p["id"], url, body)
+        self.db.add_slot(p["id"], at.date().isoformat(), iso(at), "manual", url, title,
+                         cover_path=cover_path, cover_choice=cover_choice, publication_title=publication_title)
         self.sched.poke()
         return web.json_response({"ok": True, "at": at.strftime("%Y-%m-%d %H:%M")})
 

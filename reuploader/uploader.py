@@ -117,3 +117,9 @@ def delete_video(youtube, video_id):
                     or "scope" in str(e).lower():
                 raise NoDeleteRights() from e
         raise
+
+
+def set_thumbnail(youtube, video_id, path):
+    """Separate from upload: a rejected thumbnail must never trigger a video reupload."""
+    media = MediaFileUpload(str(path), mimetype="image/jpeg", resumable=False)
+    return youtube.thumbnails().set(videoId=video_id, media_body=media).execute()

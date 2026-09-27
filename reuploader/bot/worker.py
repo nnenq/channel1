@@ -5,6 +5,7 @@
 """
 import re
 import shutil
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 
@@ -167,8 +168,25 @@ def run_slot(db, settings, slot):
     try:
         _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber, fit_tol)
         title, description, tags = build_text(meta)
+        title = slot.get("publication_title") or title
         new_id = None
         publish_at = None
+        warning = ""
+        cover_path = slot.get("cover_path")
+        cover_status = None
+        recorded = False
+        if cover_path and not Path(cover_path).is_file():
+            raise ValueError("Выбранная обложка потеряна. Подготовь публикацию заново.")
+        if not cover_path and slot.get("cover_choice", "project") != "off" and project.get("cover_mode") == "auto":
+            try:
+                from .. import covers
+                frames = covers.extract_frames(out, work / "cover_frames")
+                cover_path = str(settings.data_dir / "covers" / "selected" / f"slot{slot['id']}.jpg")
+                covers.render(frames[0], covers.suggested_text(title), project.get("cover_style", "lemon"), cover_path)
+                db.x("UPDATE slots SET cover_path=? WHERE id=?", cover_path, slot["id"])
+            except Exception:
+                cover_path = None
+                warning = "Не получилось создать автообложку. Видео опубликовано без неё."
         if to_youtube:
             privacy = project["privacy"]
             if privacy == "scheduled":
@@ -178,9 +196,30 @@ def run_slot(db, settings, slot):
                 privacy = "public"      # время уже подошло — публикуем сразу
             new_id = upload(youtube, out, title, description, tags, privacy, "24", False,
                             publish_at=publish_at)
+            # Persist successful upload before optional thumbnail and Telegram operations.
+            try:
+                db.add_upload(project["id"], source_url, meta["id"], title,
+                              views if views is not None else meta.get("view_count"), new_id,
+                              info.get("published") or meta.get("published"))
+                recorded = True
+            except Exception:
+                warning += " Видео загружено, но запись истории не удалась. Проверь канал перед новой публикацией."
+            if cover_path:
+                try:
+                    from ..uploader import set_thumbnail
+                    set_thumbnail(youtube, new_id, cover_path)
+                    cover_status = "set"
+                except Exception:
+                    cover_status = "manual"
+                    warning += " YouTube не принял обложку. Установи присланный JPG вручную в Studio."
         if to_telegram:
-            shrink_to(out, TG_MAX_MB, meta.get("duration"))
-            keep = True
+            try:
+                shrink_to(out, TG_MAX_MB, meta.get("duration"))
+                keep = True
+            except Exception:
+                if not new_id:
+                    raise
+                warning += " Видео на YouTube, но подготовка копии для Telegram не удалась."
     except AuthError as e:
         return Result("failed", str(e), title=title_hint, auth_problem=True)
     except Exception as e:  # noqa: BLE001 — любую ошибку показываем пользователю
@@ -192,16 +231,17 @@ def run_slot(db, settings, slot):
     if not info.get("published") and meta.get("published"):
         info = dict(info, published=meta["published"], duration=meta.get("duration"))
     views = views if views is not None else meta.get("view_count")
-    db.add_upload(project["id"], source_url, meta["id"], meta["title"], views, new_id or "",
-                  info.get("published"))
+    if not recorded and not new_id:
+        db.add_upload(project["id"], source_url, meta["id"], title, views, "", info.get("published"))
     extra = {"views": views, "published": info.get("published"),
              "duration": info.get("duration") or meta.get("duration"),
              "views_per_day": info.get("views_per_day"),
              "trend_per_day": info.get("trend_per_day"), "hot": info.get("hot"),
              "description": description, "tags": tags, "source_url": url, "fit": meta.get("fit"),
-             "skipped_sources": skipped_sources}
+            "skipped_sources": skipped_sources,
+            "cover": cover_path, "cover_status": cover_status, "warning": warning.strip()}
     if keep:
         extra.update(file=str(out), work=str(work))
     link = f"https://youtube.com/shorts/{new_id}" if new_id else "отправлено тебе в Telegram"
     extra["publish_at"] = publish_at
-    return Result("done", link, title=meta["title"], new_id=new_id, extra=extra)
+    return Result("done", link, title=title, new_id=new_id, extra=extra)

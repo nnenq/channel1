@@ -88,8 +88,11 @@ def bot_env(tmp_path, monkeypatch):
     monkeypatch.setenv("OWNER_ID", "777")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-не-настоящий")
     monkeypatch.delenv("ANTHROPIC_ADMIN_KEY", raising=False)
+    from reuploader.bot import cutjobs
     from reuploader.bot.cutjobs import CutWorker
     from reuploader.bot.db import DB
+    # без скачивания модели whisper: режем по паузам
+    monkeypatch.setattr(cutjobs, "whisper_transcribe", lambda *a, **k: [])
     from reuploader.bot.settings import load_settings
     s = load_settings()
     db = DB(s.db_path)

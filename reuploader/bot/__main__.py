@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import os
-import re
 import secrets
 import shutil
 import sys
@@ -15,13 +14,13 @@ from aiohttp import web
 from . import fmt
 from .cutjobs import CutWorker, job_dir
 from .db import DB, iso, utcnow
+from .tunnel import ensure_tunnel
 from .scheduler import Scheduler, describe_slot
 from .settings import load_settings
 from .telegram import TG, esc
 from .web import WebApp
 
 log = logging.getLogger("bot")
-TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 INVITE_TTL = timedelta(hours=24)
 PRIVACY_RU = {"public": "публичное", "unlisted": "по ссылке", "private": "приватное",
               "scheduled": "публичное"}
@@ -214,13 +213,19 @@ class BotApp:
             # pending — запрос уже отправлен, blocked — молчим
             return
 
+        if text.startswith("/panel"):
+            btn = self.app_button()
+            await self.set_menu_button(user["id"])
+            await self.tg.send(chat, "Актуальная кнопка панели:" if btn else "⚠️ Панель сейчас недоступна.",
+                               [[btn]] if btn else None)
+            return
         if text.startswith("/start") or text.startswith("/app"):
             btn = self.app_button()
             await self.tg.send(
                 chat,
                 "Привет! Я перезаливаю самые просматриваемые шортсы с твоих каналов на твой другой канал "
                 "по расписанию.\n\nВсё настраивается в панели: проекты, каналы, время публикаций.\n"
-                "/status — план на сегодня",
+                "/status — план на сегодня\n/panel — свежая кнопка панели, если старая не открывается",
                 [[btn]] if btn else None)
             if not btn:
                 await self.tg.send(chat, "⚠️ Панель пока недоступна: нет HTTPS-адреса (см. окно бота).")
@@ -358,35 +363,6 @@ def find_cloudflared(configured):
     return None
 
 
-async def start_tunnel(exe, local_url):
-    """Бесплатный HTTPS-адрес через Cloudflare Quick Tunnel (меняется при каждом запуске)."""
-    proc = await asyncio.create_subprocess_exec(
-        exe, "tunnel", "--no-autoupdate", "--url", local_url,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-    url = None
-    deadline = asyncio.get_running_loop().time() + 60
-    while url is None:
-        timeout = deadline - asyncio.get_running_loop().time()
-        if timeout <= 0:
-            break
-        try:
-            line = await asyncio.wait_for(proc.stderr.readline(), timeout)
-        except asyncio.TimeoutError:
-            break
-        if not line:
-            break
-        m = TUNNEL_RE.search(line.decode(errors="ignore"))
-        if m:
-            url = m.group(0)
-
-    async def drain():
-        while await proc.stderr.readline():
-            pass
-
-    asyncio.create_task(drain())
-    return proc, url
-
-
 def keep_awake():
     """Windows: не давать компьютеру уснуть, пока бот запущен."""
     if sys.platform == "win32":
@@ -421,14 +397,17 @@ async def main():
         await web.TCPSite(runner, "127.0.0.1", s.port).start()
         log.info("веб-сервер: %s", s.local_url)
 
-        tunnel = None
+        url_changed = False
         if s.public_url:
             bot.public_url = s.public_url
         else:
             exe = find_cloudflared(s.cloudflared)
             if exe:
-                tunnel, url = await start_tunnel(exe, s.local_url)
+                url, reused = await ensure_tunnel(exe, s.local_url, s.data_dir)
                 bot.public_url = url or ""
+                url_changed = bool(url) and not reused and db.get_meta("last_public_url") not in (None, url)
+                if url:
+                    db.set_meta("last_public_url", url)
             if not bot.public_url:
                 log.warning("нет HTTPS-адреса: мини-апка не откроется (нужен cloudflared или PUBLIC_URL)")
         if bot.public_url:
@@ -439,13 +418,13 @@ async def main():
         print(f"\n  Бот @{me['username']} запущен. Напиши ему /start в Telegram.\n"
               f"  Не закрывай это окно, пока нужны заливки.\n", flush=True)
         if bot.owner_id:
-            await bot.tg.send(bot.owner_id, "🟢 Бот запущен.\n" + bot.status_text(bot.owner_id),
+            note = ("\n\n🔄 Адрес панели обновился — старые кнопки «Панель» в чате больше не открываются, "
+                    "жми эту или /panel.") if url_changed else ""
+            await bot.tg.send(bot.owner_id, "🟢 Бот запущен." + note + "\n" + bot.status_text(bot.owner_id),
                               [[bot.app_button()]] if bot.app_button() else None)
         try:
             await asyncio.gather(tg.poll(bot.handle), sched.loop(), bot.cut.loop())
         finally:
-            if tunnel and tunnel.returncode is None:
-                tunnel.terminate()
             await runner.cleanup()
 
 

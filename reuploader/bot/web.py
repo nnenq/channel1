@@ -84,6 +84,7 @@ class WebApp:
         r = app.router
         r.add_get("/", self.root)
         r.add_get("/app", self.index)
+        r.add_get("/healthz", lambda request: web.Response(text="shortsbot-ok"))
         r.add_get("/api/projects", self.list_projects)
         r.add_post("/api/projects", self.create_project)
         r.add_get("/api/projects/{pid}", self.get_project)

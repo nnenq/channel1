@@ -27,6 +27,10 @@ class Result:
     extra: dict = field(default_factory=dict)
 
 
+def fmt_views(n):
+    return f"{n / 1e6:g}M" if n >= 1e6 else f"{n / 1e3:g}K" if n >= 1e3 else str(n)
+
+
 def video_id(url):
     m = SHORT_ID.search(url or "")
     return m.group(1) if m else None
@@ -127,6 +131,7 @@ def run_slot(db, settings, slot):
     source_url = None
     info = {}
     skipped_sources = {}
+    pick_note = ""
     if slot["video_url"]:
         url = slot["video_url"]
         title_hint = slot.get("video_title") or ""
@@ -135,23 +140,39 @@ def run_slot(db, settings, slot):
         sources = db.sources_in_rotation_order(project["id"])
         if not sources:
             return Result("failed", "в проекте нет каналов-источников")
+        min_views = project.get("min_views") or 0
+        common = dict(count=1, strategy=project["strategy"], min_views=min_views,
+                      min_duration=project["min_duration"], max_duration=project["max_duration"],
+                      enrich=(lambda vs: enrich(vs, youtube)) if youtube else None)
+        errors = {}
         try:
-            picked = pick(sources, db.uploaded_ids(project["id"]), count=1,
-                          strategy=project["strategy"], sort_by=project["sort_by"],
-                          max_age_days=project["max_age_days"],
-                          min_duration=project["min_duration"], max_duration=project["max_duration"],
-                          enrich=(lambda vs: enrich(vs, youtube)) if youtube else None,
-                          trend=trends.hook(db))
+            # 1) свежие (не старше N дней) и набравшие порог просмотров
+            picked = pick(sources, db.uploaded_ids(project["id"]), sort_by=project["sort_by"],
+                          max_age_days=project["max_age_days"], trend=trends.hook(db), **common)
+            errors.update(getattr(pick, "errors", {}))
+            # 2) свежих выше порога нет — старые, но популярные (по просмотрам за всё время)
+            if not picked and project["max_age_days"] and project.get("fallback_old"):
+                picked = pick(sources, db.uploaded_ids(project["id"]), sort_by="views",
+                              max_age_days=0, **common)
+                errors.update(getattr(pick, "errors", {}))
+                if picked:
+                    fresh = f" от {fmt_views(min_views)} просмотров" if min_views else ""
+                    pick_note = (f"свежих роликов (до {project['max_age_days']} дн.){fresh} не нашлось — "
+                                 f"взял старый популярный")
         except Exception as e:  # noqa: BLE001
             return Result("failed", "не удалось получить список видео: " + _error_text(e))
         if not picked:
             why = f" за последние {project['max_age_days']} дн." if project["max_age_days"] else ""
+            if project["max_age_days"] and project.get("fallback_old"):
+                why = " (ни свежих, ни старых)"
+            if min_views:
+                why += f" от {fmt_views(min_views)} просмотров"
             if project["min_duration"] or project["max_duration"]:
                 why += " подходящей длины"
-            return Result("skipped", f"новых видео{why} нет — всё уже перезалито", exhausted=True)
+            return Result("skipped", f"новых видео{why} нет — всё подходящее уже перезалито", exhausted=True)
         info = picked[0]
         url, title_hint, views, source_url = info["url"], info["title"], info["view_count"], info["source"]
-        skipped_sources = {src: str(e).splitlines()[0][:200] for src, e in getattr(pick, "errors", {}).items()}
+        skipped_sources = {src: str(e).splitlines()[0][:200] for src, e in errors.items()}
 
     # 2. Скачать + (подогнать длину) + уникализировать + (залить)
     work = settings.work_dir / f"p{project['id']}_s{slot['id']}"
@@ -238,7 +259,7 @@ def run_slot(db, settings, slot):
              "views_per_day": info.get("views_per_day"),
              "trend_per_day": info.get("trend_per_day"), "hot": info.get("hot"),
              "description": description, "tags": tags, "source_url": url, "fit": meta.get("fit"),
-            "skipped_sources": skipped_sources,
+            "skipped_sources": skipped_sources, "pick_note": pick_note,
             "cover": cover_path, "cover_status": cover_status, "warning": warning.strip()}
     if keep:
         extra.update(file=str(out), work=str(work))

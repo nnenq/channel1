@@ -123,3 +123,57 @@ def test_replan_does_not_upload_right_away(env):
     assert slots
     first = min(from_iso(x["run_at"]) for x in slots)
     assert first - utcnow() >= timedelta(minutes=REPLAN_MIN_DELAY) - timedelta(seconds=5)
+
+
+def _pick_env(tmp_path, monkeypatch, videos, **proj):
+    from reuploader import pipeline, source
+    from reuploader.bot import worker
+    monkeypatch.setattr(source, "list_shorts", lambda url, limit=200: [dict(v) for v in videos])
+    monkeypatch.setattr(source, "enrich", lambda vs, *a, **k: vs)
+
+    def stop(url, *a, **k):
+        raise RuntimeError("stop:" + url)
+    monkeypatch.setattr(worker, "prepare", stop)
+    db = DB(tmp_path / "p.db")
+    pid = db.create_project("p", 1)
+    db.add_source(pid, "https://www.youtube.com/@src")
+    db.update_project(pid, delivery="telegram", **proj)
+    sid = db.add_slot(pid, "2000-01-01", utcnow().isoformat())
+    s = SimpleNamespace(work_dir=tmp_path / "w", whisper_model="base", data_dir=tmp_path)
+    return worker.run_slot(db, s, db.slot(sid))
+
+
+def _v(vid, views, age):
+    return {"id": vid, "title": vid, "view_count": views, "age_days": age, "duration": 30,
+            "published": None, "url": f"https://www.youtube.com/shorts/{vid}"}
+
+
+VIDS = [_v("fresh50kkkk", 50_000, 2), _v("old2mmmmmmm", 2_000_000, 100), _v("old100kkkkk", 100_000, 50)]
+
+
+def test_fresh_above_threshold_wins(tmp_path, monkeypatch):
+    r = _pick_env(tmp_path, monkeypatch, VIDS + [_v("fresh300kkk", 300_000, 5)],
+                  max_age_days=10, min_views=180_000, sort_by="views")
+    assert "fresh300kkk" in r.info
+
+
+def test_no_fresh_hit_takes_old_popular(tmp_path, monkeypatch):
+    r = _pick_env(tmp_path, monkeypatch, VIDS, max_age_days=10, min_views=180_000, sort_by="trend")
+    assert "old2mmmmmmm" in r.info
+
+
+def test_fallback_off_or_nothing_above_threshold_is_exhausted(tmp_path, monkeypatch):
+    r = _pick_env(tmp_path, monkeypatch, VIDS, max_age_days=10, min_views=180_000, fallback_old=False)
+    assert r.status == "skipped" and r.exhausted and "180K" in r.info
+    (tmp_path / "b").mkdir()
+    r = _pick_env(tmp_path / "b", monkeypatch, VIDS, max_age_days=10, min_views=5_000_000)
+    assert r.status == "skipped" and r.exhausted
+
+
+def test_min_views_accepts_180k(env):
+    s, db, pid = env
+    sched = SimpleNamespace(poke=lambda: None, plan_day=lambda *a, **k: None)
+    st, j = call(s, db, sched, "PATCH", f"/api/projects/{pid}", json={"min_views": "180K", "fallback_old": False})
+    assert st == 200 and j["project"]["min_views"] == 180_000 and j["project"]["fallback_old"] is False
+    st, _ = call(s, db, sched, "PATCH", f"/api/projects/{pid}", json={"min_views": "много"})
+    assert st == 400

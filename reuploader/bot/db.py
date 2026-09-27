@@ -173,12 +173,15 @@ MIGRATIONS = [
     ("projects", "min_duration", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "max_duration", "INTEGER NOT NULL DEFAULT 0"),
     ("uploads", "deleted_at", "TEXT"),
+    ("projects", "min_views", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "fallback_old", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 PROJECT_FIELDS = {
     "cover_mode", "cover_style",
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
     "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery", "min_duration", "max_duration",
+    "min_views", "fallback_old",
     "fit_mode", "fit_seconds", "fit_cached", "fit_cached_at", "fit_min", "fit_max",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }
@@ -248,6 +251,7 @@ class DB:
             p["fixed_times"] = json.loads(p["fixed_times"] or "[]")
             p["effects"] = {**DEFAULT_EFFECTS, **json.loads(p["effects"] or "{}")}
             p["enabled"] = bool(p["enabled"])
+            p["fallback_old"] = bool(p.get("fallback_old", 1))
         return p
 
     def projects(self, user_id=None):
@@ -281,8 +285,9 @@ class DB:
         for k in ("fixed_times", "effects"):
             if k in fields and not isinstance(fields[k], str):
                 fields[k] = json.dumps(fields[k])
-        if "enabled" in fields:
-            fields["enabled"] = int(bool(fields["enabled"]))
+        for k in ("enabled", "fallback_old"):
+            if k in fields:
+                fields[k] = int(bool(fields[k]))
         cols = ", ".join(f"{k} = ?" for k in fields)
         self.x(f"UPDATE projects SET {cols} WHERE id = ?", *fields.values(), pid)
 

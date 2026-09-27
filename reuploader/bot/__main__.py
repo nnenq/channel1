@@ -124,7 +124,9 @@ class BotApp:
                if result.extra.get("publish_at")
                else f"залито ({PRIVACY_RU.get(project['privacy'], project['privacy'])})") + "\n"
             f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}"
-            f"{esc(fmt.fit_line(result.extra))}{esc(fmt.skipped_sources_line(result.extra))}\n{result.info}"
+            f"{esc(fmt.fit_line(result.extra))}{esc(fmt.skipped_sources_line(result.extra))}"
+            + (f"\n🕰 {esc(result.extra['pick_note'])}" if result.extra.get("pick_note") else "")
+            + f"\n{result.info}"
             + ("\n⚠️ " + esc(result.extra["warning"]) if result.extra.get("warning") else ""), project=project)
 
     async def cover(self, project, result):
@@ -186,7 +188,10 @@ class BotApp:
             f"• ➕ добавить или заменить каналы-источники;\n"
             f"• ⏳ ждать — как только на каналах появятся новые шортсы, продолжу сам."
             + (f"\n\nСейчас стоит фильтр «не старше {project['max_age_days']} дн.» — "
-               f"его можно увеличить в панели." if project["max_age_days"] else ""), rows, project=project)
+               f"его можно увеличить в панели." if project["max_age_days"] and not project.get("fallback_old") else "")
+            + (f"\n\nСтоит порог «от {fmt.views(project['min_views'])} просмотров» — "
+               f"ролики слабее бот не берёт; порог можно снизить в панели." if project.get("min_views") else ""),
+            rows, project=project)
 
     # ----- входящие сообщения -----
     async def handle(self, update):

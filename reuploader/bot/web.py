@@ -235,7 +235,7 @@ class WebApp:
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
-                "sort_by", "max_age_days", "min_duration", "max_duration", "delivery", "cover_mode", "cover_style",
+                "sort_by", "max_age_days", "min_duration", "max_duration", "min_views", "fallback_old", "delivery", "cover_mode", "cover_style",
                 "fit_mode", "fit_seconds", "fit_cached", "fit_min", "fit_max",
                 "channel_title", "channel_id")} | {
                                                    "linked": bool(p["token_path"]),
@@ -340,6 +340,15 @@ class WebApp:
             if mx and mn > mx:
                 raise ApiError("Минимальная длина больше максимальной.")
             upd.update(min_duration=mn, max_duration=mx)
+        if "min_views" in body:
+            from ..smartcut.target import parse_views
+
+            try:
+                upd["min_views"] = max(0, parse_views(str(body["min_views"] or "0")))
+            except ValueError:
+                raise ApiError("Минимум просмотров — число, например 180000 или 180K.") from None
+        if "fallback_old" in body:
+            upd["fallback_old"] = bool(body["fallback_old"])
         if "max_age_days" in body:
             upd["max_age_days"] = _int(body["max_age_days"] or 0, 0, 3650, "Не старше, дней")
         if "effects" in body:
@@ -389,7 +398,8 @@ class WebApp:
         return await self.get_project(request)
 
     def _reset_exhausted(self, p, upd):
-        if p["exhausted_on"] and {"sort_by", "max_age_days", "strategy", "min_duration", "max_duration"} & upd.keys():
+        if p["exhausted_on"] and {"sort_by", "max_age_days", "strategy", "min_duration", "max_duration",
+                                  "min_views", "fallback_old"} & upd.keys():
             upd["exhausted_on"] = None
 
     async def delete_source(self, request):

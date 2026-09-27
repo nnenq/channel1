@@ -46,6 +46,45 @@ def _error_text(e):
 
 
 TG_MAX_MB = 48
+FIT_REFRESH = timedelta(hours=24)
+
+
+def fit_target_for(db, project):
+    """Целевая длина для подгонки: своя или «как на канале» (медиана лучших 30% по просмотрам).
+
+    «Как на канале» — по твоему каналу для перезалива; если на нём пока мало роликов,
+    по каналам-источникам. Считается раз в сутки и кэшируется в проекте."""
+    mode = project.get("fit_mode") or "off"
+    if mode == "fixed":
+        return project["fit_seconds"] or None
+    if mode != "channel":
+        return None
+    cached_at = project.get("fit_cached_at")
+    if project.get("fit_cached") and cached_at and \
+            datetime.now(timezone.utc) - datetime.fromisoformat(cached_at) < FIT_REFRESH:
+        return project["fit_cached"]
+    from ..smartcut.target import target_from_videos
+    from ..source import list_shorts
+
+    target = None
+    try:
+        if project.get("channel_id"):
+            vids = list_shorts(f"https://www.youtube.com/channel/{project['channel_id']}", 100)
+            with_views = [(v.get("duration"), v.get("view_count")) for v in vids if v.get("view_count")]
+            if len(with_views) >= 5:
+                target, _ = target_from_videos(with_views)
+        if not target:
+            pool = []
+            for src in db.sources_in_rotation_order(project["id"]):
+                pool += [(v.get("duration"), v.get("view_count")) for v in list_shorts(src, 100)]
+            target, _ = target_from_videos(pool)
+    except Exception:  # noqa: BLE001 — не узнали длину: берём прошлую или «своя длина»
+        target = None
+    if target:
+        db.update_project(project["id"], fit_cached=target,
+                          fit_cached_at=datetime.now(timezone.utc).isoformat())
+        return target
+    return project.get("fit_cached") or project["fit_seconds"] or None
 
 
 def run_slot(db, settings, slot):
@@ -104,11 +143,19 @@ def run_slot(db, settings, slot):
         info = picked[0]
         url, title_hint, views, source_url = info["url"], info["title"], info["view_count"], info["source"]
 
-    # 2. Скачать + уникализировать + (залить)
+    # 2. Скачать + (подогнать длину) + уникализировать + (залить)
     work = settings.work_dir / f"p{project['id']}_s{slot['id']}"
     keep = False
+    fit_target = fit_target_for(db, project)
+    transcriber = None
+    if fit_target:
+        from functools import partial
+
+        from ..smartcut.analyze import whisper_transcribe
+
+        transcriber = partial(whisper_transcribe, model_size=settings.whisper_model)
     try:
-        _, out, meta = prepare(url, work, project["effects"])
+        _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber)
         title, description, tags = build_text(meta)
         new_id = None
         publish_at = None
@@ -141,7 +188,7 @@ def run_slot(db, settings, slot):
              "duration": info.get("duration") or meta.get("duration"),
              "views_per_day": info.get("views_per_day"),
              "trend_per_day": info.get("trend_per_day"), "hot": info.get("hot"),
-             "description": description, "tags": tags, "source_url": url}
+             "description": description, "tags": tags, "source_url": url, "fit": meta.get("fit")}
     if keep:
         extra.update(file=str(out), work=str(work))
     link = f"https://youtube.com/shorts/{new_id}" if new_id else "отправлено тебе в Telegram"

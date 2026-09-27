@@ -307,6 +307,20 @@ async function showProject(id, data) {
       per_day: "Просмотры ÷ дни с выхода. Ролик месяц назад с 2M ≈ 67K/день, ролик 2 дня назад с 1M ≈ 500K/день — возьмётся второй.",
     }[p.sort_by]}</div>
 
+    <h2>Подгонять длину при заливке</h2>
+    <div class="card">
+      <div class="row"><div class="seg">${[["off", "Как есть"], ["fixed", "Своя длина"], ["channel", "Как на канале"]].map(([k, v]) =>
+        `<button class="${p.fit_mode === k ? "on" : ""}" onclick="patch({fit_mode:'${k}'})">${v}</button>`).join("")}</div></div>
+      ${p.fit_mode === "fixed" ? `<div class="row"><div class="grow">Целевая длина</div>
+        <input class="num" style="width:90px" placeholder="0:45" value="${p.fit_seconds ? fmtDur(p.fit_seconds) : ""}" onchange="patch({fit_seconds:this.value})"></div>` : ""}
+      ${p.fit_mode === "channel" ? `<div class="row sub">${p.fit_cached ? "Сейчас цель ≈ " + fmtDur(p.fit_cached) + " (обновляется раз в сутки)" : "Цель посчитаю при следующей заливке"}</div>` : ""}
+    </div>
+    <div class="hint">${{
+      off: "Ролики заливаются целиком.",
+      fixed: "Длинные ролики бот укорачивает «умной обрезкой»: режет в паузах, сохраняет начало и финал. Короче цели — не трогает.",
+      channel: "Цель — медиана длины лучших 30% роликов твоего канала для перезалива (пока на нём мало роликов — каналов-источников).",
+    }[p.fit_mode || "off"]}</div>
+
     <h2>Расписание</h2>
     <div class="card">
       <div class="row"><div class="seg">
@@ -340,6 +354,7 @@ async function showProject(id, data) {
           ${s.retry ? `<div class="sub">повторная попытка</div>` : ""}</div>
         ${s.status === "planned" ? `<button class="x" onclick="cancelSlot(${s.id})">×</button>` : ""}</div>`).join("")
         || `<div class="empty">${p.ready ? (p.enabled ? "На сегодня публикаций нет" : "Проект на паузе") : "Привяжи канал или выбери «Мне в Telegram» — и расписание появится"}</div>`}
+      ${p.ready ? `<div class="row"><button class="wide" onclick="publishAuto()">⚡ Залить сейчас — бот выберет сам</button></div>` : ""}
       ${p.ready && p.enabled ? `<div class="row"><button class="ghost" onclick="replan()">🎲 Перераспределить время на сегодня</button></div>` : ""}
     </div>
 
@@ -392,6 +407,10 @@ function addTime() {
   if (t) patch({ fixed_times: [...state.project.fixed_times, t] });
 }
 function delTime(t) { patch({ fixed_times: state.project.fixed_times.filter(x => x !== t) }); }
+async function publishAuto() {
+  const r = await guarded(() => api("POST", `/api/projects/${pid()}/publish`, { when: "auto" }));
+  if (r) { haptic("success"); toast("Выбираю ролик и заливаю — пришлю в чат"); reload(); }
+}
 async function replan() {
   const d = await guarded(() => api("POST", `/api/projects/${pid()}/replan`));
   if (d) { haptic("success"); toast("Время перераспределено"); reload(d); }

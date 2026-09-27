@@ -207,6 +207,7 @@ class WebApp:
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
                 "sort_by", "max_age_days", "min_duration", "max_duration", "delivery",
+                "fit_mode", "fit_seconds", "fit_cached",
                 "channel_title", "channel_id")} | {
                                                    "linked": bool(p["token_path"]),
                                                    "ready": bool(p["token_path"]) or not needs_youtube(p),
@@ -271,6 +272,20 @@ class WebApp:
             if body["sort_by"] not in ("trend", "views", "per_day"):
                 raise ApiError("Неизвестная сортировка.")
             upd["sort_by"] = body["sort_by"]
+        if "fit_mode" in body:
+            if body["fit_mode"] not in ("off", "fixed", "channel"):
+                raise ApiError("Неизвестный режим подгонки длины.")
+            upd["fit_mode"] = body["fit_mode"]
+        if "fit_seconds" in body:
+            from ..smartcut.target import parse_duration
+
+            try:
+                sec = parse_duration(str(body["fit_seconds"] or 0))
+            except ValueError as e:
+                raise ApiError(str(e)) from None
+            if sec and not 5 <= sec <= 600:
+                raise ApiError("Длина — от 5 секунд до 10 минут.")
+            upd["fit_seconds"] = sec
         if "min_duration" in body or "max_duration" in body:
             mn = _int(body.get("min_duration", p["min_duration"]) or 0, 0, 36000, "Длина от, сек")
             mx = _int(body.get("max_duration", p["max_duration"]) or 0, 0, 36000, "Длина до, сек")
@@ -380,6 +395,14 @@ class WebApp:
         if needs_youtube(p) and not p["token_path"]:
             raise ApiError("Сначала привяжи канал для перезалива — или выбери «Мне в Telegram».")
         body = await request.json()
+        if body.get("when") == "auto":
+            now = datetime.now(self.s.tz)
+            # «бот выберет сам»: слот без конкретного видео — выбор по правилам проекта
+            if not self.db.sources(p["id"]):
+                raise ApiError("Сначала добавь каналы-источники.")
+            self.db.add_slot(p["id"], now.date().isoformat(), iso(now), "manual")
+            self.sched.poke()
+            return web.json_response({"ok": True, "at": now.strftime("%Y-%m-%d %H:%M")})
         raw = body.get("video_url", "")
         m, tt = VIDEO_RE.search(raw), TIKTOK_VIDEO_RE.search(raw)
         if m:

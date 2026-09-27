@@ -149,6 +149,10 @@ MIGRATIONS = [
     ("cut_jobs", "mode", "TEXT NOT NULL DEFAULT 'free'"),
     ("cut_jobs", "ai_state", "TEXT"),
     ("cut_jobs", "estimate", "TEXT"),
+    ("projects", "fit_mode", "TEXT NOT NULL DEFAULT 'off'"),
+    ("projects", "fit_seconds", "REAL NOT NULL DEFAULT 0"),
+    ("projects", "fit_cached", "REAL"),
+    ("projects", "fit_cached_at", "TEXT"),
     ("projects", "min_duration", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "max_duration", "INTEGER NOT NULL DEFAULT 0"),
 ]
@@ -156,6 +160,7 @@ MIGRATIONS = [
 PROJECT_FIELDS = {
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
     "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery", "min_duration", "max_duration",
+    "fit_mode", "fit_seconds", "fit_cached", "fit_cached_at",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }
 

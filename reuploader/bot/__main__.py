@@ -123,13 +123,15 @@ class BotApp:
             + (f"запланировано на YouTube — выйдет в {result.extra['publish_at'].astimezone(self.s.tz):%H:%M}"
                if result.extra.get("publish_at")
                else f"залито ({PRIVACY_RU.get(project['privacy'], project['privacy'])})") + "\n"
-            f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}\n{result.info}", project=project)
+            f"{esc(result.title)}\nОригинал: {fmt.original_line(result.extra, self.s.tz)}"
+            f"{esc(fmt.fit_line(result.extra))}\n{result.info}", project=project)
 
     async def video(self, project, result):
         """Обработанное видео — всем, у кого есть доступ, с текстом для ручной публикации."""
         e = result.extra
         caption = (f"🎬 <b>{esc(project['name'])}</b>: готово к публикации (уже обработано)\n"
-                   f"{esc(result.title)}\nОригинал: {fmt.original_line(e, self.s.tz)}\n{e['source_url']}")
+                   f"{esc(result.title)}\nОригинал: {fmt.original_line(e, self.s.tz)}{esc(fmt.fit_line(e))}\n"
+                   f"{e['source_url']}")
         try:
             await self.tg.send_video(self.project_user(project), e["file"], caption)
         except Exception as err:  # noqa: BLE001

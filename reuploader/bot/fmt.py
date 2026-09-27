@@ -40,6 +40,18 @@ def published(iso, tz):
     return dt.astimezone(tz).strftime("%d.%m.%Y %H:%M"), age
 
 
+def fit_line(extra):
+    """Строка о подгонке длины (или пусто, если не подгоняли)."""
+    fit = extra.get("fit")
+    if not fit:
+        return ""
+    if fit.get("status") == "error":
+        return f"\n⚠️ Длину не подогнал: {fit.get('error', '')[:150]} — залил как есть"
+    if fit.get("status") == "already_short":
+        return f"\n✂️ Ролик уже короче цели ({duration(fit['target'])}) — не резал"
+    return f"\n✂️ Длина подогнана: {duration(fit['before'])} → {duration(fit['after'])}"
+
+
 def original_line(extra, tz):
     """Строка про оригинал: просмотры · дата выхода (сколько назад) · длительность · в день."""
     when, age = published(extra.get("published"), tz)

@@ -132,14 +132,32 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
     return rank([v for v in pool if v["id"] not in exclude_ids], **opts)[:count]
 
 
-def prepare(video_url, work_dir, effects):
-    """Скачивает видео и применяет эффекты. Возвращает (src, out, meta)."""
+def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None):
+    """Скачивает видео, при необходимости подгоняет длину (умная обрезка) и применяет эффекты.
+
+    fit_target — целевая длина, сек (None — не резать). Результат подгонки — в meta["fit"]:
+    отчёт smart_cut или {"status": "error", ...}; при ошибке заливаем без обрезки.
+    Возвращает (src, out, meta)."""
     from .effects import apply_effects
     from .source import download
 
-    src, meta = download(video_url, work_dir)
-    out = Path(work_dir) / f"{meta['id']}.out.mp4"
-    apply_effects(src, out, effects)
+    work = Path(work_dir)
+    src, meta = download(video_url, work)
+    fx_input = src
+    meta["fit"] = None
+    if fit_target:
+        from .smartcut import smart_cut
+
+        cut = work / f"{meta['id']}.fit.mp4"
+        try:
+            report = smart_cut(src, cut, fit_target, transcriber=transcriber, work_dir=work / "fit_tmp")
+            meta["fit"] = report
+            if report["status"] != "already_short" and cut.exists():
+                fx_input = cut
+        except Exception as e:  # noqa: BLE001 — не получилось обрезать: заливаем как есть
+            meta["fit"] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
+    out = work / f"{meta['id']}.out.mp4"
+    apply_effects(fx_input, out, effects)
     return src, out, meta
 
 

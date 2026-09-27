@@ -97,6 +97,14 @@ def main():
     r.add_argument("--dry-run", action="store_true", help="скачать и обработать, но не заливать")
     r.add_argument("--keep", action="store_true", help="не удалять файлы после заливки")
 
+    cut = sub.add_parser("cut", help="умная обрезка видео до нужной длины")
+    cut.add_argument("input")
+    cut.add_argument("output")
+    g = cut.add_mutually_exclusive_group(required=True)
+    g.add_argument("--target", type=float, help="целевая длина, сек")
+    g.add_argument("--channel", help="длина как у лучших роликов канала (ссылка)")
+    cut.add_argument("--whisper", default="small", help="модель faster-whisper (tiny/base/small/medium)")
+
     fx = sub.add_parser("process", help="только применить эффекты к локальному файлу")
     fx.add_argument("input")
     fx.add_argument("output")
@@ -123,6 +131,25 @@ def main():
             videos = rank(videos, sort_by=args.sort, max_age_days=args.days)
         for i, v in enumerate(videos[: args.n], 1):
             print(f"{i:>3}. {v['url']}  {v['title']}\n     {_describe(v)}")
+        return
+
+    if args.cmd == "cut":
+        from functools import partial
+
+        from .smartcut import format_report, smart_cut
+        from .smartcut.analyze import whisper_transcribe
+        from .smartcut.target import target_from_channel
+
+        target = args.target
+        if args.channel:
+            target, n = target_from_channel(args.channel)
+            if not target:
+                raise SystemExit("Не удалось узнать длительности роликов канала — задай --target.")
+            print(f"Цель: {target} с (медиана {n} лучших роликов канала)")
+        report = smart_cut(args.input, args.output, target,
+                           transcriber=partial(whisper_transcribe, model_size=args.whisper),
+                           progress=lambda stage, f: print(f"  {int(f * 100):3d}% {stage}", flush=True))
+        print(format_report(report))
         return
 
     if args.cmd == "auth":

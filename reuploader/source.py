@@ -37,6 +37,13 @@ SECUID_RE = re.compile(r'"secUid"\s*:\s*"(MS4wLjABAAAA[\w-]+)"')
 TIKTOK_IDS_FILE = Path("data") / "tiktok_ids.json"   # ник -> secUid (ID аккаунта TikTok)
 
 
+class _Silent:
+    def debug(self, msg):
+        pass
+
+    warning = error = info = debug
+
+
 class TikTokIdError(Exception):
     """TikTok не отдал ID аккаунта — нужна ссылка на любое видео этого аккаунта."""
 
@@ -88,7 +95,8 @@ def _tiktok_id_from_profile_page(handle):
 def list_tiktok(profile_url, scan_limit=200):
     """Ролики TikTok-аккаунта с просмотрами, датой и длительностью (через yt-dlp)."""
     handle = TIKTOK_RE.search(profile_url).group(1)
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": scan_limit}
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": scan_limit,
+            "logger": _Silent()}    # ошибки разбираем сами — не засоряем окно бота
     known = _tiktok_ids().get(handle.lower())
     urls = ([f"tiktokuser:{known}"] if known else []) + [f"https://www.tiktok.com/@{handle}"]
     info, last_err = None, None

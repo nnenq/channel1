@@ -9,6 +9,7 @@ from datetime import timedelta
 from .db import from_iso, iso, utcnow
 
 log = logging.getLogger("trends")
+FAILED = {}     # канал -> когда последний раз не удалось прочитать
 SNAPSHOT_EVERY = timedelta(hours=2)     # как часто замерять каналы
 MIN_SNAPSHOT_GAP = timedelta(minutes=50)
 KEEP = timedelta(days=7)
@@ -58,11 +59,16 @@ def snapshot_all(db, list_shorts, enrich, youtube_client):
         last = db.last_snapshot_at(row["url"])
         if last and now - last < SNAPSHOT_EVERY:
             continue
+        failed = FAILED.get(row["url"])
+        if failed and now - failed < SNAPSHOT_EVERY:
+            continue            # недавно не читался — не долбим его каждые 10 минут
         try:
             videos = list_shorts(row["url"], 200)
         except Exception as e:  # noqa: BLE001 — один сломанный канал не должен ломать замер остальных
+            FAILED[row["url"]] = now
             log.warning("замер %s: %s", row["url"], str(e).splitlines()[0][:200])
             continue
+        FAILED.pop(row["url"], None)
         if row["token_path"]:
             try:
                 enrich(videos, youtube_client(row["token_path"]))   # точные просмотры через API

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from ..pipeline import build_text, pick, prepare
 from ..source import enrich
 from . import trends
+from .db import iso
 
 SHORT_ID = re.compile(r"(?:shorts/|v=|youtu\.be/)([\w-]{11})")
 
@@ -147,12 +148,13 @@ def run_slot(db, settings, slot):
         errors = {}
         try:
             # 1) свежие (не старше N дней) и набравшие порог просмотров
-            picked = pick(sources, db.uploaded_ids(project["id"]), sort_by=project["sort_by"],
+            exclude = db.exclude_ids(project)
+            picked = pick(sources, exclude, sort_by=project["sort_by"],
                           max_age_days=project["max_age_days"], trend=trends.hook(db), **common)
             errors.update(getattr(pick, "errors", {}))
             # 2) свежих выше порога нет — старые, но популярные (по просмотрам за всё время)
             if not picked and project["max_age_days"] and project.get("fallback_old"):
-                picked = pick(sources, db.uploaded_ids(project["id"]), sort_by="views",
+                picked = pick(sources, exclude, sort_by="views",
                               max_age_days=0, **common)
                 errors.update(getattr(pick, "errors", {}))
                 if picked:
@@ -221,7 +223,8 @@ def run_slot(db, settings, slot):
             try:
                 db.add_upload(project["id"], source_url, meta["id"], title,
                               views if views is not None else meta.get("view_count"), new_id,
-                              info.get("published") or meta.get("published"))
+                              info.get("published") or meta.get("published"),
+                              live_at=iso(publish_at) if publish_at else None)
                 recorded = True
             except Exception:
                 warning += " Видео загружено, но запись истории не удалась. Проверь канал перед новой публикацией."

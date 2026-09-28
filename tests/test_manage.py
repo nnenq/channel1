@@ -177,3 +177,50 @@ def test_min_views_accepts_180k(env):
     assert st == 200 and j["project"]["min_views"] == 180_000 and j["project"]["fallback_old"] is False
     st, _ = call(s, db, sched, "PATCH", f"/api/projects/{pid}", json={"min_views": "много"})
     assert st == 400
+
+
+def test_same_video_not_sent_to_all_my_channels(tmp_path):
+    db = DB(tmp_path / "x.db")
+    a, b = db.create_project("a", 1), db.create_project("b", 1)
+    other = db.create_project("чужой", 2)
+    db.add_upload(a, "s", "vidAAAAAAAA", "t", 1, "N1")
+    db.add_upload(other, "s", "vidOTHERRRR", "t", 1, "N2")
+    assert db.exclude_ids(db.project(b)) == {"vidAAAAAAAA"}      # чужие проекты не влияют
+    db.update_project(b, no_cross_dupes=False)
+    assert db.exclude_ids(db.project(b)) == set()
+
+
+def test_zero_view_autodelete(tmp_path):
+    from reuploader.bot import zero_views
+    from reuploader.bot.db import iso
+    db = DB(tmp_path / "z.db")
+    pid = db.create_project("p", 1)
+    tok = tmp_path / "t.json"
+    tok.write_text("{}")
+    db.update_project(pid, token_path=str(tok), autodelete_zero=True, autodelete_hours=24)
+    old = iso(utcnow() - timedelta(hours=30))
+    for vid in ("ZERO0000000", "VIEWS000000", "PRIV0000000", "GONE0000000"):
+        db.add_upload(pid, "s", "src" + vid, vid, 1, vid, live_at=old)
+    db.add_upload(pid, "s", "srcFRESH", "fresh", 1, "FRESH000000")                       # < 24 ч
+    db.add_upload(pid, "s", "srcANCIENT", "ancient", 1, "ANCIENT0000",
+                  live_at=iso(utcnow() - timedelta(days=10)))                             # старый — не трогаем
+    data = {"ZERO0000000": (0, "public"), "VIEWS000000": (5, "public"), "PRIV0000000": (0, "private"),
+            "FRESH000000": (0, "public"), "ANCIENT0000": (0, "public")}
+
+    class YT:
+        def videos(self):
+            return self
+
+        def list(self, part, id):
+            ids = id.split(",")
+            return SimpleNamespace(execute=lambda: {"items": [
+                {"id": i, "statistics": {"viewCount": str(data[i][0])}, "status": {"privacyStatus": data[i][1]}}
+                for i in ids if i in data]})
+    deleted = []
+    rep = zero_views.run(db, lambda t: YT(), lambda yt, v: deleted.append(v), uploader.NoDeleteRights)
+    assert deleted == ["ZERO0000000"]
+    assert rep[0][1] == ["ZERO0000000"]
+    left = {u["new_video_id"] for u in db.uploads(pid)}
+    assert left == {"VIEWS000000", "PRIV0000000", "FRESH000000", "ANCIENT0000"}          # GONE — помечен удалённым
+    assert zero_views.run(db, lambda t: YT(), lambda yt, v: deleted.append(v), uploader.NoDeleteRights) == []
+    assert deleted == ["ZERO0000000"]                                                    # повторно не проверяет

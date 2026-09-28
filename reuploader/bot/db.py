@@ -2,7 +2,7 @@
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..effects import DEFAULT_EFFECTS
 
@@ -175,13 +175,18 @@ MIGRATIONS = [
     ("uploads", "deleted_at", "TEXT"),
     ("projects", "min_views", "INTEGER NOT NULL DEFAULT 0"),
     ("projects", "fallback_old", "INTEGER NOT NULL DEFAULT 1"),
+    ("projects", "no_cross_dupes", "INTEGER NOT NULL DEFAULT 1"),
+    ("projects", "autodelete_zero", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "autodelete_hours", "INTEGER NOT NULL DEFAULT 24"),
+    ("uploads", "live_at", "TEXT"),
+    ("uploads", "checked_at", "TEXT"),
 ]
 
 PROJECT_FIELDS = {
     "cover_mode", "cover_style",
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
     "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery", "min_duration", "max_duration",
-    "min_views", "fallback_old",
+    "min_views", "fallback_old", "no_cross_dupes", "autodelete_zero", "autodelete_hours",
     "fit_mode", "fit_seconds", "fit_cached", "fit_cached_at", "fit_min", "fit_max",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }
@@ -251,7 +256,8 @@ class DB:
             p["fixed_times"] = json.loads(p["fixed_times"] or "[]")
             p["effects"] = {**DEFAULT_EFFECTS, **json.loads(p["effects"] or "{}")}
             p["enabled"] = bool(p["enabled"])
-            p["fallback_old"] = bool(p.get("fallback_old", 1))
+            for k in ("fallback_old", "no_cross_dupes", "autodelete_zero"):
+                p[k] = bool(p.get(k, 0))
         return p
 
     def projects(self, user_id=None):
@@ -285,7 +291,7 @@ class DB:
         for k in ("fixed_times", "effects"):
             if k in fields and not isinstance(fields[k], str):
                 fields[k] = json.dumps(fields[k])
-        for k in ("enabled", "fallback_old"):
+        for k in ("enabled", "fallback_old", "no_cross_dupes", "autodelete_zero"):
             if k in fields:
                 fields[k] = int(bool(fields[k]))
         cols = ", ".join(f"{k} = ?" for k in fields)
@@ -319,11 +325,38 @@ class DB:
     def uploaded_ids(self, pid):
         return {r["video_id"] for r in self.q("SELECT video_id FROM uploads WHERE project_id = ?", pid)}
 
-    def add_upload(self, pid, source_url, video_id, title, views, new_id, published=None):
+    def exclude_ids(self, project):
+        """Что уже не брать: залитое в этот проект, а при no_cross_dupes — и в другие проекты
+        того же пользователя (иначе один ролик уходит сразу на все его каналы)."""
+        if not project.get("no_cross_dupes") or not project.get("user_id"):
+            return self.uploaded_ids(project["id"])
+        return {r["video_id"] for r in self.q(
+            """SELECT u.video_id FROM uploads u JOIN projects p ON p.id = u.project_id
+               WHERE p.user_id = ?""", project["user_id"])}
+
+    def add_upload(self, pid, source_url, video_id, title, views, new_id, published=None, live_at=None):
+        """live_at — когда ролик стал публичным (для отложенных — время публикации)."""
         self.x("""INSERT INTO uploads(project_id, source_url, video_id, title, views, published,
-                                     new_video_id, uploaded_at)
-                  VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
-               pid, source_url, video_id, title, views, published, new_id, iso(utcnow()))
+                                     new_video_id, uploaded_at, live_at)
+                  VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               pid, source_url, video_id, title, views, published, new_id, iso(utcnow()), live_at)
+
+    def zero_view_candidates(self, now):
+        """Ролики на проверку «0 просмотров»: включено в проекте, прошло autodelete_hours
+        с публикации (но не больше чем +48 ч — старые не трогаем), ещё не проверены."""
+        rows = self.q("""SELECT u.*, p.autodelete_hours AS hours FROM uploads u
+                         JOIN projects p ON p.id = u.project_id
+                         WHERE p.autodelete_zero = 1 AND u.deleted_at IS NULL AND u.checked_at IS NULL
+                           AND u.new_video_id != ''""")
+        out = []
+        for r in rows:
+            age = now - from_iso(r["live_at"] or r["uploaded_at"])
+            if timedelta(hours=r["hours"]) <= age <= timedelta(hours=r["hours"] + 48):
+                out.append(r)
+        return out
+
+    def mark_upload_checked(self, upload_id):
+        self.x("UPDATE uploads SET checked_at = ? WHERE id = ?", iso(utcnow()), upload_id)
 
     def uploads(self, pid, limit=500):
         """История без удалённых. Удалённые остаются в uploaded_ids — бот не перезальёт их снова."""

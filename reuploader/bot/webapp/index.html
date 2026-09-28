@@ -309,6 +309,10 @@ async function showProject(id, data) {
           <button class="x" onclick="delSource(${s.id})">×</button></div>`).join("")}
       <div class="row"><input id="srcUrl" class="grow" placeholder="YouTube или TikTok: https://…/@канал">
         <button onclick="addSource()">Добавить</button></div>
+      <div class="row"><div class="grow">Не повторять ролики с других моих каналов
+          <div class="sub">если ролик уже залит в другой твой проект — сюда его не брать</div></div>
+        <label class="switch"><input type="checkbox" ${p.no_cross_dupes ? "checked" : ""}
+          onchange="stage({no_cross_dupes:this.checked})"><span></span></label></div>
       <div class="row"><div class="seg">
         <button class="${p.strategy === "rotate" ? "on" : ""}" onclick="stage({strategy:'rotate'})">Каналы по очереди</button>
         <button class="${p.strategy === "top" ? "on" : ""}" onclick="stage({strategy:'top'})">Общий топ</button></div></div>
@@ -378,6 +382,17 @@ async function showProject(id, data) {
       ? "Каждый день время случайное внутри окна, с промежутком между роликами." : "Каждый день в эти часы."}
       ${p.delivery !== "telegram" && p.privacy === "scheduled" ? "<br><b>Запланировать:</b> бот заранее загружает ролики как отложенные публикации — YouTube сам выложит их в указанное время (YouTube Studio → Контент → «Запланировано»). После загрузки компьютер можно выключать."
         : p.delivery !== "telegram" && p.privacy === "public" ? "<br><b>Сразу:</b> бот загружает и публикует ролик в указанное время — компьютер должен быть включён." : ""}</div>
+
+    ${p.delivery === "telegram" ? "" : `<h2>Уборка на канале</h2>
+    <div class="card">
+      <div class="row"><div class="grow">Удалять ролики без просмотров</div>
+        <label class="switch"><input type="checkbox" ${p.autodelete_zero ? "checked" : ""}
+          onchange="stage({autodelete_zero:this.checked})"><span></span></label></div>
+      ${p.autodelete_zero ? `<div class="row"><div class="grow">Через сколько часов после публикации</div>
+        <input class="num" type="number" min="6" max="168" value="${p.autodelete_hours}"
+          oninput="stage({autodelete_hours:+this.value}, false)"></div>` : ""}
+    </div>
+    <div class="hint">Бот раз в час проверяет свежие публичные ролики: если через это время у ролика 0 просмотров — удаляет его с канала и пишет тебе. Ролики, которым больше этого времени + 2 суток, не трогает. Нужна привязка канала с правом удаления (при старой привязке — «Сменить»).</div>`}
 
     <h2>План</h2>
     <div class="card">

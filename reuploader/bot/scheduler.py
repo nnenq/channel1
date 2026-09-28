@@ -16,6 +16,7 @@ TICK = 20                         # как часто проверять рас�
 MAX_LATE = timedelta(minutes=90)  # если бот был выключен дольше — слот пропускается
 RETRY_AFTER = timedelta(minutes=20)
 SCHEDULE_LEAD = timedelta(minutes=15)
+ZERO_CHECK_EVERY = timedelta(hours=1)    # проверка «0 просмотров»
 REPLAN_MIN_DELAY = 15                # минут: после смены настроек первый ролик не раньше
 PLAN_TOMORROW_HOUR = 20              # с этого часа планируем завтрашний день  # publishAt должен быть в будущем — с запасом
 
@@ -164,9 +165,19 @@ class Scheduler:
             await loop.run_in_executor(None, trends.snapshot_all, self.db, source.list_shorts,
                                        source.enrich, youtube_client)
 
+    async def zero_views(self):
+        """Удалить ролики, у которых через сутки (настройка проекта) всё ещё 0 просмотров."""
+        from . import zero_views
+        from ..uploader import NoDeleteRights, delete_video, youtube_client
+
+        report = await asyncio.get_running_loop().run_in_executor(
+            None, zero_views.run, self.db, youtube_client, delete_video, NoDeleteRights)
+        for project, deleted, error in report:
+            await self.notify.autodeleted(project, deleted, error)
+
     async def loop(self):
         self.db.reset_stuck()
-        last_snapshot = None
+        last_snapshot = last_zero = None
         while True:
             try:
                 self.plan_all()
@@ -174,6 +185,9 @@ class Scheduler:
                 if not last_snapshot or utcnow() - last_snapshot >= timedelta(minutes=10):
                     last_snapshot = utcnow()
                     await self.snapshot()
+                if not last_zero or utcnow() - last_zero >= ZERO_CHECK_EVERY:
+                    last_zero = utcnow()
+                    await self.zero_views()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

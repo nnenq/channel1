@@ -129,6 +129,16 @@ class BotApp:
             + f"\n{result.info}"
             + ("\n⚠️ " + esc(result.extra["warning"]) if result.extra.get("warning") else ""), project=project)
 
+    async def autodeleted(self, project, deleted, error=None):
+        name = esc(project["channel_title"] or project["name"])
+        lines = [f"🗑 <b>{name}</b>: удалил ролики без просмотров за {project['autodelete_hours']} ч:"]
+        lines += [f"• {esc(t)}" for t in deleted[:20]]
+        if not deleted:
+            lines = [f"⚠️ <b>{name}</b>: автоудаление роликов с 0 просмотров"]
+        if error:
+            lines.append(f"⚠️ {esc(error)}")
+        await self.notify_text("\n".join(lines), project=project)
+
     async def cover(self, project, result):
         caption = "Обложка: " + result.title + "\n"
         if result.extra.get("cover_status") == "set":

@@ -432,7 +432,15 @@ async function showProject(id, data) {
       <div class="row"><div class="grow">Осветлить тени, %</div><input class="num" id="fx_sh" oninput="stageFx()" type="number" step="1" value="${Math.round(e.shadows * 100)}"></div>
       <div class="row"><div class="grow">Размытие сверху/снизу, % высоты</div><input class="num" id="fx_bh" oninput="stageFx()" type="number" step="1" value="${Math.round(e.edge_blur.height * 100)}"></div>
       <div class="row"><div class="grow">Сила размытия</div><input class="num" id="fx_bs" oninput="stageFx()" type="number" step="1" value="${e.edge_blur.sigma}"></div>
+      ${[["random", true, "🎲 Свои параметры для каждого ролика", "увеличение, поворот, цвет, тени — случайно вокруг значений выше"],
+         ["speed", true, "Слегка менять скорость", "0.97–1.04×, на слух почти незаметно (работает вместе с 🎲)"],
+         ["mirror", false, "Иногда зеркалить", "половина роликов отражается; не включай, если в кадре есть текст"],
+         ["subtitles", false, "💬 Субтитры из речи", "крупные слова по центру, как в Shorts; распознавание речи на твоём ПК (+10–30 с на ролик)"]]
+        .map(([k, d, t, sub]) => `<div class="row"><div class="grow">${t}<div class="sub">${sub}</div></div>
+          <label class="switch"><input type="checkbox" ${fxOn(e, k, d) ? "checked" : ""}
+            onchange="stageFx({${k}:this.checked}, true)"><span></span></label></div>`).join("")}
     </div>
+    <div class="hint">Чем сильнее отличается ролик от оригинала, тем меньше шанс, что YouTube посчитает его повторным контентом.</div>
 
     <h2>История</h2>
     <div class="card">
@@ -460,11 +468,12 @@ function stage(body, rerender = true) {
   Object.assign(draft, body);
   if (rerender) showProject(pid(), state); else updateSaveUI();
 }
-function stageFx() {
+function stageFx(extra, rerender = false) {
   const v = id => +document.getElementById(id).value;
-  stage({ effects: { zoom: 1 + v("fx_zoom") / 100, rotate_deg: v("fx_rot"), shadows: v("fx_sh") / 100,
-    edge_blur: { height: v("fx_bh") / 100, sigma: v("fx_bs") } } }, false);
+  stage({ effects: { ...cur().effects, zoom: 1 + v("fx_zoom") / 100, rotate_deg: v("fx_rot"), shadows: v("fx_sh") / 100,
+    edge_blur: { height: v("fx_bh") / 100, sigma: v("fx_bs") }, ...(extra || {}) } }, rerender);
 }
+const fxOn = (e, k, dflt) => e[k] ?? dflt;
 function updateSaveUI() {
   const dirty = isDirty() && location.hash === "#p" + draftPid;
   document.body.classList.toggle("dirty", dirty);

@@ -725,6 +725,9 @@ def _effects(new, old):
             "height": _num(b.get("height", e["edge_blur"]["height"]), 0, 0.3, "Высота размытия"),
             "sigma": _num(b.get("sigma", e["edge_blur"]["sigma"]), 0, 60, "Сила размытия"),
         }
+    for k in ("random", "speed", "mirror", "subtitles"):
+        if k in new:
+            e[k] = bool(new[k])
     return e
 
 

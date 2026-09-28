@@ -150,7 +150,7 @@ def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None, fit
     fit_target — целевая длина, сек (None — не резать). Результат подгонки — в meta["fit"]:
     отчёт smart_cut или {"status": "error", ...}; при ошибке заливаем без обрезки.
     Возвращает (src, out, meta)."""
-    from .effects import apply_effects
+    from .effects import apply_effects, randomize
     from .source import download
 
     work = Path(work_dir)
@@ -170,7 +170,27 @@ def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None, fit
         except Exception as e:  # noqa: BLE001 — не получилось обрезать: заливаем как есть
             meta["fit"] = {"status": "error", "error": f"{type(e).__name__}: {e}"[:300]}
     out = work / f"{meta['id']}.out.mp4"
-    apply_effects(fx_input, out, effects)
+    fx = randomize(effects)                       # у каждого ролика свои параметры
+    meta["fx"] = fx
+    subs = None
+    meta["subs"] = None
+    if effects.get("subtitles") and transcriber:
+        from .smartcut.media import probe
+        from .subtitles import to_ass
+
+        try:
+            info = probe(fx_input)
+            subs = to_ass(transcriber(fx_input), info.width, info.height, work / "subs.ass")
+            meta["subs"] = "ok" if subs else "no_speech"
+        except Exception as e:  # noqa: BLE001 — без субтитров, но ролик всё равно выйдет
+            meta["subs"] = f"error: {type(e).__name__}: {e}"[:200]
+    try:
+        apply_effects(fx_input, out, fx, subs)
+    except Exception:
+        if not subs:
+            raise
+        meta["subs"] = "error: не удалось вшить субтитры"
+        apply_effects(fx_input, out, fx)
     return src, out, meta
 
 

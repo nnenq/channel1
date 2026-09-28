@@ -182,7 +182,7 @@ def run_slot(db, settings, slot):
     fit = fit_target_for(db, project)
     fit_target, fit_tol = fit if fit else (None, 0.05)
     transcriber = None
-    if fit_target:
+    if fit_target or (project["effects"] or {}).get("subtitles"):
         from functools import partial
 
         from ..smartcut.analyze import whisper_transcribe

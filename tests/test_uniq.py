@@ -49,6 +49,18 @@ def test_to_ass_escapes_and_skips_silence(tmp_path):
     assert "PlayResY: 1920" in text and "(B1)ЖЕСТЬ" in text and "{\\b1}" not in text
 
 
+def test_animated_highlights_each_word_in_turn(tmp_path):
+    words = [Word(0.0, 0.3, "раз"), Word(0.3, 0.6, "два"), Word(0.6, 0.9, "три")]
+    lines = [l for l in to_ass(words, 1080, 1920, tmp_path / "a.ass").read_text(encoding="utf-8").splitlines()
+             if l.startswith("Dialogue")]
+    assert len(lines) == 3                                   # по строке на каждое слово
+    assert "\\t(" in lines[0] and "\\t(" not in lines[1]      # «прыжок» только при появлении фразы
+    for k, word in enumerate(("РАЗ", "ДВА", "ТРИ")):
+        assert f"\\fscy112}}{word}" in lines[k]              # подсвечено именно текущее слово
+    plain = to_ass(words, 1080, 1920, tmp_path / "p.ass", animated=False).read_text(encoding="utf-8")
+    assert plain.count("Dialogue") == 1 and "\\t(" not in plain
+
+
 @pytest.fixture(scope="module")
 def clip(tmp_path_factory):
     from tests.synth import make_video

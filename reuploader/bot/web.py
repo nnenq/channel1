@@ -107,6 +107,7 @@ class WebApp:
         r.add_post("/api/projects/{pid}/sources", self.add_source)
         r.add_delete("/api/projects/{pid}/sources/{sid}", self.delete_source)
         r.add_get("/api/projects/{pid}/top", self.top_videos)
+        r.add_get("/api/projects/{pid}/topics", self.topics)
         r.add_post("/api/projects/{pid}/publish", self.publish)
         r.add_post("/api/projects/{pid}/replan", self.replan)
         r.add_delete("/api/projects/{pid}/slots/{sid}", self.cancel_slot)
@@ -209,6 +210,8 @@ class WebApp:
         return web.json_response({"id": pid})
 
     async def get_project(self, request):
+        from ..topics import expand
+
         p = self._project(request)
         now = datetime.now(self.s.tz)
         since = iso(datetime.combine(now.date(), datetime.min.time(), self.s.tz))
@@ -235,7 +238,7 @@ class WebApp:
             "project": {k: p[k] for k in (
                 "id", "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
                 "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects",
-                "sort_by", "max_age_days", "min_duration", "max_duration", "min_views", "fallback_old", "no_cross_dupes", "autodelete_zero", "autodelete_hours", "delivery", "cover_mode", "cover_style",
+                "sort_by", "max_age_days", "min_duration", "max_duration", "min_views", "fallback_old", "no_cross_dupes", "autodelete_zero", "autodelete_hours", "topic", "delivery", "cover_mode", "cover_style",
                 "fit_mode", "fit_seconds", "fit_cached", "fit_min", "fit_max",
                 "channel_title", "channel_id")} | {
                                                    "linked": bool(p["token_path"]),
@@ -249,7 +252,7 @@ class WebApp:
             "device_login": Path(self.s.device_client_secret).exists(),
             "linking": (lambda d: d if d and d["until"] > time.time() else None)(self.device_pending.get(p["id"])),
             "today": now.date().isoformat(), "now": now.strftime("%Y-%m-%dT%H:%M"),
-            "tz": str(self.s.tz),
+            "tz": str(self.s.tz), "topic_terms": expand(p.get("topic") or ""),
         })
 
     async def patch_project(self, request):
@@ -352,6 +355,8 @@ class WebApp:
                 upd[k] = bool(body[k])
         if "autodelete_hours" in body:
             upd["autodelete_hours"] = _int(body["autodelete_hours"], 6, 168, "Через сколько часов удалять")
+        if "topic" in body:
+            upd["topic"] = re.sub(r"\s+", " ", str(body["topic"] or "")).strip()[:200]
         if "max_age_days" in body:
             upd["max_age_days"] = _int(body["max_age_days"] or 0, 0, 3650, "Не старше, дней")
         if "effects" in body:
@@ -402,7 +407,7 @@ class WebApp:
 
     def _reset_exhausted(self, p, upd):
         if p["exhausted_on"] and {"sort_by", "max_age_days", "strategy", "min_duration", "max_duration",
-                                  "min_views", "fallback_old", "no_cross_dupes"} & upd.keys():
+                                  "min_views", "fallback_old", "no_cross_dupes", "topic"} & upd.keys():
             upd["exhausted_on"] = None
 
     async def delete_source(self, request):
@@ -410,13 +415,11 @@ class WebApp:
         self.db.delete_source(p["id"], int(request.match_info["sid"]))
         return await self.get_project(request)
 
-    async def top_videos(self, request):
-        """Ролики каналов-источников с датой выхода, длительностью и просмотрами в день."""
+    async def _source_videos(self, request, p):
+        """[(подпись канала, ролики или None, ошибка)] для каналов-источников проекта (с кэшем)."""
         from ..source import enrich, list_shorts
         from ..uploader import youtube_client
 
-        p = self._project(request)
-        uploaded = self.db.uploaded_ids(p["id"])
         loop = asyncio.get_running_loop()
         youtube = None
         if p["token_path"]:
@@ -431,24 +434,49 @@ class WebApp:
             trends.record(self.db, videos, url)
             return videos
 
-        result = []
+        out = []
         for s in self.db.sources(p["id"]):
             cached = self.top_cache.get(s["url"])
             if not cached or time.time() - cached[0] > TOP_CACHE_TTL or "refresh" in request.query:
                 try:
                     videos = await loop.run_in_executor(None, fetch, s["url"])
                 except Exception as e:  # noqa: BLE001
-                    result.append({"label": channel_label(s["url"]), "error": str(e)[:200], "videos": []})
+                    out.append((channel_label(s["url"]), None, str(e)[:200]))
                     continue
                 cached = (time.time(), videos)
                 self.top_cache[s["url"]] = cached
-            videos = trends.apply(self.db, [dict(v) for v in cached[1]])
-            videos = rank(videos, sort_by="trend")   # проставляет "hot"
-            result.append({
-                "label": channel_label(s["url"]),
-                "videos": [dict(v, uploaded=v["id"] in uploaded) for v in videos],
-            })
-        return web.json_response({"sources": result, "with_api": youtube is not None})
+            out.append((channel_label(s["url"]), [dict(v) for v in cached[1]], None))
+        return out, youtube is not None
+
+    async def top_videos(self, request):
+        """Ролики каналов-источников с датой выхода, длительностью и просмотрами в день.
+        ?topic=... — только про эту тему (по умолчанию — тема проекта)."""
+        from ..topics import expand
+
+        p = self._project(request)
+        topic = request.query.get("topic", p.get("topic") or "").strip()
+        terms = expand(topic)
+        uploaded = self.db.uploaded_ids(p["id"])
+        sources, with_api = await self._source_videos(request, p)
+        result = []
+        for label, videos, error in sources:
+            if videos is None:
+                result.append({"label": label, "error": error, "videos": []})
+                continue
+            videos = trends.apply(self.db, videos)
+            videos = rank(videos, sort_by="trend", topic_terms=terms)   # проставляет "hot"
+            result.append({"label": label, "videos": [dict(v, uploaded=v["id"] in uploaded) for v in videos]})
+        return web.json_response({"sources": result, "with_api": with_api, "topic": topic, "terms": terms})
+
+    async def topics(self, request):
+        """Какие известные темы (мультфильмы, игры) есть на каналах-источниках."""
+        from ..topics import detect
+
+        p = self._project(request)
+        sources, _ = await self._source_videos(request, p)
+        pool = [v for _, videos, _ in sources for v in (videos or [])]
+        return web.json_response({"topics": [{"name": n, "count": c} for n, c in detect(pool)],
+                                  "total": len(pool)})
 
     async def publish(self, request):
         """Залить конкретное видео: сейчас / в ближайший слот / в указанное время."""

@@ -224,3 +224,13 @@ def test_zero_view_autodelete(tmp_path):
     assert left == {"VIEWS000000", "PRIV0000000", "FRESH000000", "ANCIENT0000"}          # GONE — помечен удалённым
     assert zero_views.run(db, lambda t: YT(), lambda yt, v: deleted.append(v), uploader.NoDeleteRights) == []
     assert deleted == ["ZERO0000000"]                                                    # повторно не проверяет
+
+
+def test_topic_limits_auto_pick(tmp_path, monkeypatch):
+    vids = [dict(_v("spongebob01", 900_000, 3), title="SpongeBob best"),
+            dict(_v("elsafrozen1", 200_000, 3), title="Elsa ice magic")]
+    r = _pick_env(tmp_path, monkeypatch, vids, topic="Эльза", sort_by="views")
+    assert "elsafrozen1" in r.info                     # не самый популярный, зато по теме
+    (tmp_path / "b").mkdir()
+    r = _pick_env(tmp_path / "b", monkeypatch, vids, topic="Рик и Морти")
+    assert r.status == "skipped" and "Рик и Морти" in r.info

@@ -321,6 +321,13 @@ async function showProject(id, data) {
 
     <h2>Какие видео брать</h2>
     <div class="card">
+      <div class="row" style="flex-wrap:wrap"><div class="grow" style="min-width:100%">Тема — про что ролики
+        <div class="sub">пиши как удобно: «Эльза», «холодное сердце», «Рик и Морти». Несколько — через запятую. Пусто — любые</div></div>
+        <input id="topicIn" class="grow" placeholder="например: Эльза" value="${drafted("topic", esc(P.topic || ""))}"
+          oninput="stage({topic:this.value}, false)">
+        <button class="ghost" onclick="loadTopics()">🔎 Какие темы есть</button></div>
+      <div id="topicsBox">${"topic" in draft ? `<div class="row sub">Сохрани настройки — и бот начнёт искать по новой теме</div>`
+        : data.topic_terms.length ? `<div class="row sub">Ищу в названиях, тегах и описаниях: ${data.topic_terms.slice(0, 14).map(esc).join(", ")}${data.topic_terms.length > 14 ? "…" : ""}</div>` : ""}</div>
       <div class="row"><div class="seg">${SORT_BY.map(([k, v]) =>
         `<button class="${p.sort_by === k ? "on" : ""}" onclick="stage({sort_by:'${k}'})">${v}</button>`).join("")}</div></div>
       <div class="row"><div class="grow">Не старше, дней<div class="sub">0 — любые</div></div>
@@ -412,8 +419,11 @@ async function showProject(id, data) {
     <h2>Выбрать видео вручную</h2>
     <div class="card">
       <div class="row"><input id="vidUrl" class="grow" placeholder="Ссылка на шортс или TikTok-видео"><button onclick="publishPrompt(document.getElementById('vidUrl').value)">Залить…</button></div>
-      <div id="top"><div class="row"><button class="ghost" onclick="loadTop()">🔥 Показать топ видео с каналов</button></div></div>
+      <div id="top"><div class="row"><button class="ghost" onclick="loadTop()">🔥 Показать топ видео с каналов${p.topic ? " — про «" + esc(p.topic) + "»" : ""}</button></div></div>
     </div>
+    <div class="hint">${p.topic
+      ? `<b>Тема «${esc(p.topic)}»</b>: по расписанию бот сам выбирает ролики только про неё; а здесь ты можешь выбрать ролик по этой теме сам.`
+      : "Здесь ты выбираешь ролик сам; по расписанию бот выбирает сам."}</div>
     <div id="schedBox"></div>
 
     <h2>Обложки · бесплатно</h2>
@@ -593,10 +603,28 @@ async function delProject() {
 }
 
 let topSort = null;
+async function loadTopics() {
+  const box = document.getElementById("topicsBox");
+  box.innerHTML = `<div class="row"><span class="spin"></span><span class="sub">Смотрю, про что ролики на твоих каналах…</span></div>`;
+  const d = await guarded(() => api("GET", `/api/projects/${pid()}/topics`));
+  if (!d) { box.innerHTML = ""; return; }
+  box.innerHTML = d.topics.length
+    ? `<div class="row"><div class="chips grow">${d.topics.map(t => `<span class="chip tap" style="padding-right:12px"
+        onclick="pickTopic('${esc(t.name)}')">${esc(t.name)} · ${t.count}</span>`).join("")}</div></div>
+       <div class="row sub">Из ${d.total} роликов. Нажми тему — или впиши свою.</div>`
+    : `<div class="row sub">Известных тем не нашёл (из ${d.total} роликов) — впиши тему сам, например название мультфильма на английском.</div>`;
+}
+function pickTopic(name) {
+  document.getElementById("topicIn").value = name;
+  stage({ topic: name }, false);
+  haptic("success"); toast("Тема: " + name + " — не забудь сохранить");
+}
 async function loadTop(refresh) {
   const box = document.getElementById("top");
   box.innerHTML = `<div class="row"><span class="spin"></span><span class="sub">Смотрю каналы… (до минуты)</span></div>`;
-  const d = await guarded(() => api("GET", `/api/projects/${pid()}/top${refresh ? "?refresh=1" : ""}`));
+  const q = new URLSearchParams({ topic: cur().topic || "" });
+  if (refresh) q.set("refresh", "1");
+  const d = await guarded(() => api("GET", `/api/projects/${pid()}/top?${q}`));
   if (!d) { box.innerHTML = ""; return; }
   window._topData = d;
   topSort = topSort || state.project.sort_by || "trend";
@@ -614,10 +642,12 @@ function renderTop() {
   window._top = {};
   box.innerHTML = `<div class="row"><div class="seg">${Object.entries(TOP_SORTS).map(([k, [label]]) =>
       `<button class="${topSort === k ? "on" : ""}" onclick="topSort='${k}';renderTop()">${label}</button>`).join("")}</div></div>`
+    + (d.topic ? `<div class="row sub">Только про «${esc(d.topic)}» · найдено ${d.sources.reduce((n, s) => n + s.videos.length, 0)}</div>` : "")
     + (d.with_api ? "" : `<div class="hint" style="padding-bottom:6px">Даты есть только у первых 30 роликов — привяжи канал, чтобы видеть все.</div>`)
     + d.sources.map(s => `
     <div class="row"><b class="grow">${esc(s.label)}</b></div>
     ${s.error ? `<div class="row sub">Ошибка: ${esc(s.error)}</div>` : ""}
+    ${!s.error && !s.videos.length && d.topic ? `<div class="row sub">Про «${esc(d.topic)}» здесь роликов нет</div>` : ""}
     ${(key ? [...s.videos].sort((a, b) => key(b) - key(a)) : s.videos).slice(0, 15).map(v => { window._top[v.id] = v; return `
       <div class="row tap vid" onclick="publishPrompt('${v.url}', '${v.id}')">
         <div class="grow" style="min-width:0"><div class="ellipsis">${esc(v.title)}</div>

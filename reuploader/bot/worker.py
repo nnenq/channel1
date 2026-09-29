@@ -141,8 +141,11 @@ def run_slot(db, settings, slot):
         sources = db.sources_in_rotation_order(project["id"])
         if not sources:
             return Result("failed", "в проекте нет каналов-источников")
+        from ..topics import expand
+
         min_views = project.get("min_views") or 0
-        common = dict(count=1, strategy=project["strategy"], min_views=min_views,
+        topic = (project.get("topic") or "").strip()
+        common = dict(count=1, strategy=project["strategy"], min_views=min_views, topic_terms=expand(topic),
                       min_duration=project["min_duration"], max_duration=project["max_duration"],
                       enrich=(lambda vs: enrich(vs, youtube)) if youtube else None)
         errors = {}
@@ -171,6 +174,8 @@ def run_slot(db, settings, slot):
                 why += f" от {fmt_views(min_views)} просмотров"
             if project["min_duration"] or project["max_duration"]:
                 why += " подходящей длины"
+            if topic:
+                why += f" по теме «{topic}»"
             return Result("skipped", f"новых видео{why} нет — всё подходящее уже перезалито", exhausted=True)
         info = picked[0]
         url, title_hint, views, source_url = info["url"], info["title"], info["view_count"], info["source"]

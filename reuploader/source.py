@@ -223,6 +223,8 @@ def enrich(videos, youtube=None, limit=60):
                     continue
                 v["published"] = it["snippet"].get("publishedAt")
                 v["title"] = it["snippet"].get("title") or v["title"]
+                v["tags"] = it["snippet"].get("tags") or []
+                v["description"] = (it["snippet"].get("description") or "")[:1000]
                 v["duration"] = iso_duration(it.get("contentDetails", {}).get("duration")) or v.get("duration")
                 views = it.get("statistics", {}).get("viewCount")
                 if views is not None:
@@ -246,6 +248,8 @@ def enrich(videos, youtube=None, limit=60):
                 if info.get("view_count") is not None:
                     v["view_count"] = info["view_count"]
                 v["duration"] = info.get("duration") or v.get("duration")
+                v["tags"] = info.get("tags") or v.get("tags") or []
+                v["description"] = (info.get("description") or v.get("description") or "")[:1000]
 
     add_age(videos)
     return videos

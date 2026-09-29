@@ -180,13 +180,14 @@ MIGRATIONS = [
     ("projects", "autodelete_hours", "INTEGER NOT NULL DEFAULT 24"),
     ("uploads", "live_at", "TEXT"),
     ("uploads", "checked_at", "TEXT"),
+    ("projects", "topic", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 PROJECT_FIELDS = {
     "cover_mode", "cover_style",
     "name", "enabled", "per_day", "schedule_mode", "window_start", "window_end",
     "min_gap", "max_gap", "fixed_times", "privacy", "strategy", "effects", "sort_by", "max_age_days", "delivery", "min_duration", "max_duration",
-    "min_views", "fallback_old", "no_cross_dupes", "autodelete_zero", "autodelete_hours",
+    "min_views", "fallback_old", "no_cross_dupes", "autodelete_zero", "autodelete_hours", "topic",
     "fit_mode", "fit_seconds", "fit_cached", "fit_cached_at", "fit_min", "fit_max",
     "token_path", "channel_id", "channel_title", "exhausted_on",
 }

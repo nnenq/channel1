@@ -50,17 +50,22 @@ def _trend_sorted(videos):
 
 
 def rank(videos, exclude_ids=(), sort_by="views", max_age_days=0, min_views=0,
-         min_duration=0, max_duration=0):
+         min_duration=0, max_duration=0, topic_terms=()):
     """Фильтрует и сортирует ролики.
 
     max_age_days > 0 — только ролики не старше стольких дней
     (ролики без известной даты при этом отбрасываются).
     min_duration / max_duration (сек, 0 — без ограничения) — фильтр по длине ролика
     (ролики с неизвестной длиной при включённом фильтре отбрасываются).
+    topic_terms — только ролики про эту тему (см. topics.expand / topics.matches).
     """
+    from .topics import matches
+
     out = []
     for v in videos:
         if v["id"] in exclude_ids or (v["view_count"] or 0) < min_views:
+            continue
+        if topic_terms and not matches(v, topic_terms):
             continue
         if max_age_days and (v.get("age_days") is None or v["age_days"] > max_age_days):
             continue
@@ -77,7 +82,8 @@ def rank(videos, exclude_ids=(), sort_by="views", max_age_days=0, min_views=0,
 
 
 def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="top",
-         sort_by="views", max_age_days=0, enrich=None, trend=None, min_duration=0, max_duration=0):
+         sort_by="views", max_age_days=0, enrich=None, trend=None, min_duration=0, max_duration=0,
+         topic_terms=()):
     """Выбирает `count` лучших ещё не перезалитых шортсов.
 
     strategy="top"    — общий рейтинг по всем источникам;
@@ -94,7 +100,8 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
     from .source import enrich as ytdlp_enrich
     from .source import list_shorts
 
-    need_dates = sort_by in ("per_day", "trend") or bool(max_age_days or min_duration or max_duration)
+    # теги/описание для темы тоже приходят вместе с датами (enrich)
+    need_dates = sort_by in ("per_day", "trend") or bool(max_age_days or min_duration or max_duration or topic_terms)
 
     errors = {}
 
@@ -116,7 +123,7 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
 
     ranked = {}
     opts = dict(sort_by=sort_by, max_age_days=max_age_days, min_views=min_views,
-                min_duration=min_duration, max_duration=max_duration)
+                min_duration=min_duration, max_duration=max_duration, topic_terms=tuple(topic_terms))
     if strategy == "rotate":
         picked, seen = [], set()
         while len(picked) < count:

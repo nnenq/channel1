@@ -199,6 +199,9 @@ class BotApp:
             f"• ⏳ ждать — как только на каналах появятся новые шортсы, продолжу сам."
             + (f"\n\nСейчас стоит фильтр «не старше {project['max_age_days']} дн.» — "
                f"его можно увеличить в панели." if project["max_age_days"] and not project.get("fallback_old") else "")
+            + (f"\n\nСтоит тема «{esc(project['topic'])}» — бот берёт только ролики про неё. "
+               f"Можно расширить тему (добавить варианты через запятую) или убрать её в панели."
+               if project.get("topic") else "")
             + (f"\n\nСтоит порог «от {fmt.views(project['min_views'])} просмотров» — "
                f"ролики слабее бот не берёт; порог можно снизить в панели." if project.get("min_views") else ""),
             rows, project=project)

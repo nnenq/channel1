@@ -109,6 +109,43 @@ CREATE TABLE IF NOT EXISTS cut_jobs (
     created_at TEXT NOT NULL,
     finished_at TEXT
 );
+-- Пересказы и теории: мультфильм пользователя -> сценарии -> голос -> ролик
+CREATE TABLE IF NOT EXISTS stories (
+    id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL,          -- uploading | uploaded | queued | running | confirm | scripts | failed
+    stage TEXT,
+    progress REAL NOT NULL DEFAULT 0,
+    filename TEXT,
+    size INTEGER NOT NULL DEFAULT 0,
+    src_path TEXT,
+    duration REAL,
+    kind TEXT NOT NULL DEFAULT 'auto', -- recap | theory | auto | manual
+    lang TEXT NOT NULL DEFAULT 'ru',
+    count INTEGER NOT NULL DEFAULT 3,
+    seconds INTEGER NOT NULL DEFAULT 60,
+    topic TEXT,
+    manual_text TEXT,
+    ai_state TEXT,
+    estimate TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS story_scripts (
+    id INTEGER PRIMARY KEY,
+    story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    body TEXT NOT NULL,            -- JSON: title, kind, overlay, why, lines[{text, from, to}]
+    status TEXT NOT NULL DEFAULT 'wait_voice', -- wait_voice | queued | running | done | failed
+    tg_chat INTEGER,
+    tg_message_id INTEGER,
+    voice_path TEXT,
+    out_path TEXT,
+    dl_token TEXT,
+    error TEXT,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS story_scripts_tg ON story_scripts(tg_chat, tg_message_id);
 -- Каждый платный запрос к Claude: токены и стоимость по ценам из pricing.yaml
 CREATE TABLE IF NOT EXISTS ai_usage (
     id INTEGER PRIMARY KEY,
@@ -470,6 +507,47 @@ class DB:
 
     def expired_cut_jobs(self, now_iso):
         return self.q("SELECT * FROM cut_jobs WHERE delete_at IS NOT NULL AND delete_at <= ?", now_iso)
+
+    # --- пересказы и теории ---
+    def create_story(self, user_id, filename, size):
+        return self.x("""INSERT INTO stories(user_id, status, filename, size, created_at)
+                         VALUES(?, 'uploading', ?, ?, ?)""", user_id, filename, size, iso(utcnow()))
+
+    def story(self, sid):
+        return self.one("SELECT * FROM stories WHERE id = ?", sid)
+
+    def stories(self, user_id, limit=20):
+        return self.q("SELECT * FROM stories WHERE user_id = ? ORDER BY id DESC LIMIT ?", user_id, limit)
+
+    def update_story(self, sid, **fields):
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.x(f"UPDATE stories SET {cols} WHERE id = ?", *fields.values(), sid)
+
+    def next_story(self):
+        return self.one("SELECT * FROM stories WHERE status = 'queued' ORDER BY id LIMIT 1")
+
+    def add_story_script(self, story_id, idx, body):
+        return self.x("INSERT INTO story_scripts(story_id, idx, body) VALUES(?, ?, ?)",
+                      story_id, idx, json.dumps(body, ensure_ascii=False))
+
+    def story_scripts(self, story_id):
+        return self.q("SELECT * FROM story_scripts WHERE story_id = ? ORDER BY idx", story_id)
+
+    def story_script(self, sid):
+        return self.one("SELECT * FROM story_scripts WHERE id = ?", sid)
+
+    def update_story_script(self, sid, **fields):
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self.x(f"UPDATE story_scripts SET {cols} WHERE id = ?", *fields.values(), sid)
+
+    def story_script_by_message(self, chat, message_id):
+        return self.one("SELECT * FROM story_scripts WHERE tg_chat = ? AND tg_message_id = ?", chat, message_id)
+
+    def next_story_script(self):
+        return self.one("SELECT * FROM story_scripts WHERE status = 'queued' ORDER BY id LIMIT 1")
+
+    def story_script_by_token(self, token):
+        return self.one("SELECT * FROM story_scripts WHERE dl_token = ?", token)
 
     # --- расходы на Claude и пополнения ---
     def add_ai_usage(self, user_id, job_id, u):

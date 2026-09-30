@@ -13,6 +13,7 @@ from aiohttp import web
 
 from . import fmt
 from .cutjobs import CutWorker, job_dir
+from .stories import StoryWorker
 from .db import DB, iso, utcnow
 from .tunnel import ensure_tunnel, stop_saved_tunnel
 from .scheduler import Scheduler, describe_slot
@@ -215,6 +216,17 @@ class BotApp:
         msg = update.get("message") or {}
         user = msg.get("from") or {}
         text = (msg.get("text") or "").strip()
+        private = user and msg.get("chat", {}).get("type") == "private" and self.has_access(user["id"])
+        # голос в ответ на сценарий пересказа/теории -> собираем ролик
+        if private and msg.get("reply_to_message") and (
+                msg.get("voice") or msg.get("audio") or msg.get("video_note")
+                or (msg.get("document") or {}).get("mime_type", "").startswith("audio/")):
+            if await self.stories.on_voice(msg):
+                return
+        if private and msg.get("reply_to_message") and (msg.get("video") or (msg.get("document") or {})
+                                                         .get("mime_type", "").startswith("video/")):
+            if await self.stories.on_voice(msg):      # видео с голосом тоже подойдёт
+                return
         if user and msg.get("chat", {}).get("type") == "private" and self.has_access(user["id"]) \
                 and (msg.get("video") or (msg.get("document") or {}).get("mime_type", "").startswith("video/")):
             return await self.on_video(msg)
@@ -331,6 +343,21 @@ class BotApp:
                         pass
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
             return
+        if data.startswith(("st_yes:", "st_no:")):
+            story = self.db.story(int(data.split(":")[1]))
+            if not story or story["user_id"] != user.get("id"):
+                answer = "Нет доступа"
+            else:
+                ok, answer = self.stories.decide(story, data.startswith("st_yes:"))
+                if ok and cq.get("message"):
+                    m = cq["message"]
+                    try:
+                        await self.tg.call("editMessageReplyMarkup", chat_id=m["chat"]["id"],
+                                           message_id=m["message_id"], reply_markup={"inline_keyboard": []})
+                    except Exception:  # noqa: BLE001
+                        pass
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
         if data.startswith(("acc:", "dec:")) and user.get("id") == self.owner_id:
             uid = int(data[4:])
             known = self.db.user(uid) or {}
@@ -420,6 +447,7 @@ async def main():
         sched = Scheduler(db, s, bot)
         bot.sched = sched
         bot.cut = CutWorker(db, s, bot)
+        bot.stories = StoryWorker(db, s, bot)
 
         runner = web.AppRunner(WebApp(db, s, sched, bot).build(), access_log=None)
         await runner.setup()
@@ -459,7 +487,7 @@ async def main():
             await bot.tg.send(bot.owner_id, "🟢 Бот запущен." + note + "\n" + bot.status_text(bot.owner_id),
                               [[bot.app_button()]] if bot.app_button() else None)
         try:
-            await asyncio.gather(tg.poll(bot.handle), sched.loop(), bot.cut.loop())
+            await asyncio.gather(tg.poll(bot.handle), sched.loop(), bot.cut.loop(), bot.stories.loop())
         finally:
             await runner.cleanup()
 

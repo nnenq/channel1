@@ -117,6 +117,9 @@ class WebApp:
         from . import cut_api
 
         cut_api.setup(self, r)
+        from . import stories
+
+        stories.setup(self, r)
         from . import cover_api
         self.covers = cover_api.setup(self, app)
         r.add_get("/api/access", self.access_list)

@@ -66,6 +66,18 @@ class TG:
             raise RuntimeError("Telegram: не удалось отправить обложку")
         return data["result"]
 
+    async def download(self, file_id, dst):
+        """Скачивает файл, присланный боту (голосовое, аудио). Лимит Telegram — 20 МБ."""
+        info = await self.call("getFile", file_id=file_id)
+        url = self.base.replace("/bot", "/file/bot", 1) + info["file_path"]
+        async with self.session.get(url, timeout=aiohttp.ClientTimeout(total=300)) as r:
+            if r.status != 200:
+                raise RuntimeError(f"Telegram: не удалось скачать файл ({r.status})")
+            with open(dst, "wb") as f:
+                async for part in r.content.iter_chunked(256 * 1024):
+                    f.write(part)
+        return dst
+
     async def poll(self, handler):
         offset = None
         while True:

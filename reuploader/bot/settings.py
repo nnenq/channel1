@@ -21,6 +21,8 @@ class Settings:
     cut_max_minutes: int = 30
     cut_link_ttl_h: int = 24
     whisper_model: str = "small"
+    story_max_mb: int = 6144
+    story_max_minutes: int = 180
 
     @property
     def db_path(self):
@@ -37,6 +39,10 @@ class Settings:
     @property
     def cut_dir(self):
         return self.data_dir / "cut"
+
+    @property
+    def story_dir(self):
+        return self.data_dir / "stories"
 
     @property
     def local_url(self):
@@ -65,4 +71,6 @@ def load_settings():
         cut_max_minutes=int(os.getenv("CUT_MAX_MINUTES", "30")),
         cut_link_ttl_h=int(os.getenv("CUT_LINK_TTL_H", "24")),
         whisper_model=os.getenv("WHISPER_MODEL", "small"),
+        story_max_mb=int(os.getenv("STORY_MAX_MB", "6144")),
+        story_max_minutes=int(os.getenv("STORY_MAX_MINUTES", "180")),
     )

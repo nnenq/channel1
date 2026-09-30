@@ -75,10 +75,11 @@ def _animated_events(start, end, group):
     return events
 
 
-def to_ass(words, width, height, path, animated=True):
-    """Пишет .ass для видео width×height. -> path или None, если слов нет."""
+def to_ass(words, width, height, path, animated=True, overlay=None, overlay_until=None):
+    """Пишет .ass для видео width×height. -> path или None, если слов нет.
+    overlay — надпись-крючок сверху кадра (до overlay_until секунд, по умолчанию — до конца)."""
     lines = groups(words)
-    if not lines:
+    if not lines and not overlay:
         return None
     w, h = width or 1080, height or 1920
     size = round(h * 0.045)
@@ -93,17 +94,22 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,Arial,{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,1,0,1,{max(2, size // 12)},2,2,{round(w * 0.08)},{round(w * 0.08)},{margin_v},1
+Style: Top,Arial,{round(size * 0.95)},&H0000E5FF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,0,0,3,{max(6, size // 5)},0,8,{round(w * 0.06)},{round(w * 0.06)},{round(h * 0.09)},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events = []
+    if overlay:
+        end = overlay_until or (lines[-1][1] if lines else 60)
+        events.append((0.0, end, "{\\fad(250,0)}" + _clean(overlay).replace("  ", " ")))
     for s, e, g in lines:
         if animated:
             events += _animated_events(s, e, g)
         else:
             events.append((s, e, _clean(" ".join(x.text.strip() for x in g))))
-    body = "".join(f"Dialogue: 0,{_ts(s)},{_ts(e)},Cap,,0,0,0,,{t}\n" for s, e, t in events)
+    body = "".join(f"Dialogue: 0,{_ts(s)},{_ts(e)},{'Top' if i == 0 and overlay else 'Cap'},,0,0,0,,{t}\n"
+                   for i, (s, e, t) in enumerate(events))
     with open(path, "w", encoding="utf-8") as f:
         f.write(header + body)
     return path

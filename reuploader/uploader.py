@@ -69,7 +69,7 @@ def channel_title(youtube):
 
 
 def upload(youtube, path, title, description, tags, privacy, category_id, made_for_kids,
-           publish_at=None):
+           publish_at=None, progress=None):
     """publish_at (datetime с часовым поясом) — отложенная публикация: видео загружается
     приватным, и YouTube сам делает его публичным в это время."""
     body = {
@@ -93,7 +93,10 @@ def upload(youtube, path, title, description, tags, privacy, category_id, made_f
     while response is None:
         status, response = request.next_chunk()
         if status:
-            print(f"    загрузка {int(status.progress() * 100)}%", flush=True)
+            if progress:
+                progress(status.progress())
+            else:
+                print(f"    загрузка {int(status.progress() * 100)}%", flush=True)
     return response["id"]
 
 

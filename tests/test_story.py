@@ -143,7 +143,9 @@ def bot_env(tmp_path, monkeypatch, media):
     from reuploader.bot.db import DB
     from reuploader.bot.settings import load_settings
 
-    def fake_whisper(path, model_size="small", language=None):
+    def fake_whisper(path, model_size="small", language=None, progress=None):
+        if progress:
+            progress(0.5)
         return list(voice_words) if str(path).endswith((".ogg", ".oga")) else list(src_words)
     monkeypatch.setattr(stories, "whisper_transcribe", fake_whisper)
     s = load_settings()

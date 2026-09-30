@@ -109,7 +109,11 @@ class Scheduler:
 
         self.db.set_slot(slot["id"], "running", "заливаю…")
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, run_slot, self.db, self.s, slot)
+        from .progress import Reporter
+
+        report = Reporter(lambda stage, f: self.db.slot_progress(slot["id"], stage, f))
+        report("выбираю видео", 0.02)
+        result = await loop.run_in_executor(None, run_slot, self.db, self.s, slot, report)
         self.db.set_slot(slot["id"], result.status, result.info,
                          video_title=result.title or slot.get("video_title"))
         project = self.db.project(slot["project_id"]) or project

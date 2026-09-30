@@ -267,8 +267,9 @@ def add_age(videos):
     return videos
 
 
-def download(video_url, out_dir, preview=False):
-    """Скачивает видео в лучшем качестве, возвращает (путь, метаданные)."""
+def download(video_url, out_dir, preview=False, progress=None):
+    """Скачивает видео в лучшем качестве, возвращает (путь, метаданные).
+    progress(доля 0..1) — по скачанным байтам (видео и звук качаются по очереди)."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     opts = {
@@ -279,6 +280,18 @@ def download(video_url, out_dir, preview=False):
         "outtmpl": str(out_dir / "%(id)s.src.%(ext)s"),
         "ffmpeg_location": ffmpeg_exe(),
     }
+    if progress:
+        state = {"files": {}}
+
+        def hook(d):
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            if d.get("status") in ("downloading", "finished") and total:
+                state["files"][d.get("filename")] = (d.get("downloaded_bytes") or total, total)
+                done = sum(a for a, _ in state["files"].values())
+                size = sum(b for _, b in state["files"].values())
+                # второй файл (звук) обычно маленький — общий процент почти не «прыгает»
+                progress(min(1.0, done / size))
+        opts["progress_hooks"] = [hook]
     if preview:
         opts.update(format="bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720]/b",
                     max_filesize=512 * 1024 * 1024, socket_timeout=20, retries=2,

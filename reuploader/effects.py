@@ -132,8 +132,9 @@ def shrink_to(path, max_mb, duration):
     return path
 
 
-def apply_effects(src, dst, effects, subtitles=None):
-    """subtitles — путь к .ass, который вшивается в видео. Возвращает dst."""
+def apply_effects(src, dst, effects, subtitles=None, progress=None):
+    """subtitles — путь к .ass, который вшивается в видео. Возвращает dst.
+    progress(доля 0..1) — по отчёту ffmpeg о готовой части."""
     src, dst = Path(src).resolve(), Path(dst).resolve()
     cwd = None
     if subtitles:
@@ -157,5 +158,15 @@ def apply_effects(src, dst, effects, subtitles=None):
     if effects.get("strip_metadata", True):
         cmd += ["-map_metadata", "-1", "-map_chapters", "-1"]
     cmd.append(str(dst))
-    subprocess.run(cmd, check=True, cwd=cwd)
+    duration = None
+    if progress:
+        from .smartcut.media import probe
+
+        try:
+            duration = probe(src).duration / (tempo if tempo > 0 else 1)
+        except Exception:  # noqa: BLE001 — без длительности просто без процентов
+            duration = None
+    from . import ffprog
+
+    ffprog.run(cmd, duration, progress, cwd=cwd)
     return dst

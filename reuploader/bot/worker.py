@@ -100,7 +100,7 @@ def fit_target_for(db, project):
     return (fallback, 0.05) if fallback else None
 
 
-def run_slot(db, settings, slot):
+def run_slot(db, settings, slot, report=None):
     """Выполняет слот. delivery проекта:
     youtube  — залить на YouTube;
     telegram — только прислать обработанное видео владельцу в Telegram;
@@ -194,7 +194,11 @@ def run_slot(db, settings, slot):
 
         transcriber = partial(whisper_transcribe, model_size=settings.whisper_model)
     try:
-        _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber, fit_tol)
+        if report:
+            _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber, fit_tol,
+                                   progress=report.sub(0.05, 0.8))
+        else:
+            _, out, meta = prepare(url, work, project["effects"], fit_target, transcriber, fit_tol)
         title, description, tags = build_text(meta)
         title = slot.get("publication_title") or title
         new_id = None
@@ -222,8 +226,13 @@ def run_slot(db, settings, slot):
                 if run_at - datetime.now(timezone.utc) >= timedelta(minutes=10):
                     publish_at = run_at
                 privacy = "public"      # время уже подошло — публикуем сразу
-            new_id = upload(youtube, out, title, description, tags, privacy, "24", False,
-                            publish_at=publish_at)
+            if report:
+                up = report.sub(0.8, 1.0)
+                new_id = upload(youtube, out, title, description, tags, privacy, "24", False,
+                                publish_at=publish_at, progress=lambda f: up("загружаю на YouTube", f))
+            else:
+                new_id = upload(youtube, out, title, description, tags, privacy, "24", False,
+                                publish_at=publish_at)
             # Persist successful upload before optional thumbnail and Telegram operations.
             try:
                 db.add_upload(project["id"], source_url, meta["id"], title,

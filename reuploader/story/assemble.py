@@ -84,7 +84,7 @@ def build_filter(n, subs_name=None):
     return parts + cat + layout + tail
 
 
-def render(src, voice, clips, out, subs=None, crf=21):
+def render(src, voice, clips, out, subs=None, crf=21, progress=None):
     """Собирает ролик. clips — [(start, dur)]; voice — запись голоса; subs — .ass (или None)."""
     src, voice, out = str(Path(src).resolve()), str(Path(voice).resolve()), Path(out).resolve()
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error"]
@@ -102,12 +102,15 @@ def render(src, voice, clips, out, subs=None, crf=21):
             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
             "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart",
             "-map_metadata", "-1", str(out)]
-    subprocess.run(cmd, check=True, cwd=cwd, capture_output=True)
+    from .. import ffprog
+
+    ffprog.run(cmd, sum(d for _, d in clips), progress, cwd=cwd)
     return out
 
 
-def build_story(src, voice, script, out, transcriber, work_dir):
-    """Всё вместе. -> dict(duration, lines, words) для отчёта."""
+def build_story(src, voice, script, out, transcriber, work_dir, progress=None):
+    """Всё вместе. -> dict(duration, lines, words) для отчёта.
+    progress(этап, доля 0..1) — распознавание голоса 0–35 %, сборка видео 35–100 %."""
     from ..subtitles import to_ass
 
     work = Path(work_dir)
@@ -115,12 +118,15 @@ def build_story(src, voice, script, out, transcriber, work_dir):
     vinfo = probe(voice)
     if vinfo.duration < 3:
         raise ValueError("Запись голоса слишком короткая (меньше 3 секунд).")
+    if progress:
+        progress("распознаю голос", 0.0)
     words = transcriber(voice)
     lines = script["lines"]
     spans = align(lines, words, vinfo.duration)
     clips = plan_clips(lines, spans, probe(src).duration)
     subs = to_ass(words, W, H, work / "story.ass", overlay=script.get("overlay") or None,
                   overlay_until=vinfo.duration)
-    render(src, voice, clips, out, subs)
+    render(src, voice, clips, out, subs,
+           progress=(lambda f: progress("собираю видео", 0.35 + 0.65 * f)) if progress else None)
     return {"duration": round(vinfo.duration, 1), "lines": len(lines), "words": len(words),
             "spans": spans, "clips": clips}

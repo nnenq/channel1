@@ -108,6 +108,7 @@ class WebApp:
         r.add_delete("/api/projects/{pid}/sources/{sid}", self.delete_source)
         r.add_get("/api/projects/{pid}/top", self.top_videos)
         r.add_get("/api/projects/{pid}/topics", self.topics)
+        r.add_get("/api/projects/{pid}/progress", self.progress)
         r.add_post("/api/projects/{pid}/publish", self.publish)
         r.add_post("/api/projects/{pid}/replan", self.replan)
         r.add_delete("/api/projects/{pid}/slots/{sid}", self.cancel_slot)
@@ -180,7 +181,7 @@ class WebApp:
             "id": slot["id"], "at": t.strftime("%Y-%m-%d %H:%M"), "time": t.strftime("%H:%M"),
             "date": t.date().isoformat(), "kind": slot["kind"], "status": slot["status"],
             "info": slot["info"], "title": slot["video_title"], "video_url": slot["video_url"],
-            "retry": slot["attempt"] > 0,
+            "retry": slot["attempt"] > 0, "progress": slot.get("progress"),
         }
 
     def _summary(self, p):
@@ -470,6 +471,12 @@ class WebApp:
             videos = rank(videos, sort_by="trend", topic_terms=terms)   # проставляет "hot"
             result.append({"label": label, "videos": [dict(v, uploaded=v["id"] in uploaded) for v in videos]})
         return web.json_response({"sources": result, "with_api": with_api, "topic": topic, "terms": terms})
+
+    async def progress(self, request):
+        """Лёгкий опрос для панели: что сейчас выполняется и на сколько процентов."""
+        p = self._project(request)
+        return web.json_response({"running": [{"id": s["id"], "info": s["info"], "progress": s["progress"] or 0}
+                                              for s in self.db.running_slots(p["id"])]})
 
     async def topics(self, request):
         """Какие известные темы (мультфильмы, игры) есть на каналах-источниках."""

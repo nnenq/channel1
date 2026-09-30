@@ -74,17 +74,21 @@ def detect_scenes(path, threshold=0.25):
     return [float(x) for x in re.findall(r"pts_time:([\d.]+)", err)]
 
 
-def whisper_transcribe(path, model_size="small", language=None):
-    """Слова с таймкодами через faster-whisper (локально, без сети после загрузки модели)."""
+def whisper_transcribe(path, model_size="small", language=None, progress=None):
+    """Слова с таймкодами через faster-whisper (локально, без сети после загрузки модели).
+    progress(доля 0..1) — по тому, до какой секунды файла дошло распознавание."""
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         log.warning("faster-whisper не установлен — режу только по паузам, без учёта речи")
         return []
     model = WhisperModel(model_size, device="auto", compute_type="int8")
-    segments, _ = model.transcribe(str(path), word_timestamps=True, language=language, vad_filter=True)
+    segments, info = model.transcribe(str(path), word_timestamps=True, language=language, vad_filter=True)
+    duration = getattr(info, "duration", 0) or 0
     words = []
     for seg in segments:
+        if progress and duration:
+            progress(min(1.0, float(seg.end) / duration))
         for w in seg.words or []:
             words.append(Word(float(w.start), float(w.end), w.word.strip()))
     return words

@@ -221,6 +221,9 @@ MIGRATIONS = [
     ("story_scripts", "voice_src", "TEXT"),          # user | tts
     ("stories", "tts", "INTEGER NOT NULL DEFAULT 0"),  # сразу озвучивать голосом Google
     ("stories", "tts_voice", "TEXT"),
+    ("slots", "progress", "REAL"),
+    ("story_scripts", "progress", "REAL"),
+    ("story_scripts", "stage", "TEXT"),
 ]
 
 PROJECT_FIELDS = {
@@ -608,6 +611,12 @@ class DB:
     def set_slot(self, sid, status, info=None, **extra):
         cols = ["status = ?", "info = ?"] + [f"{k} = ?" for k in extra]
         self.x(f"UPDATE slots SET {', '.join(cols)} WHERE id = ?", status, info, *extra.values(), sid)
+
+    def slot_progress(self, sid, stage, frac):
+        self.x("UPDATE slots SET info = ?, progress = ? WHERE id = ? AND status = 'running'", stage, frac, sid)
+
+    def running_slots(self, pid):
+        return self.q("SELECT id, status, info, progress FROM slots WHERE project_id = ? AND status = 'running'", pid)
 
     def cancel_future_auto(self, pid, plan_date):
         self.x("""UPDATE slots SET status = 'cancelled', info = 'перепланировано'

@@ -67,8 +67,9 @@ class StoryWorker:
     def poke(self):
         self.wake.set()
 
-    def transcriber(self, path_json):
-        return cached_transcriber(partial(whisper_transcribe, model_size=self.s.whisper_model), path_json)
+    def transcriber(self, path_json, progress=None):
+        return cached_transcriber(partial(whisper_transcribe, model_size=self.s.whisper_model, progress=progress),
+                                  path_json)
 
     async def loop(self):
         self.db.x("UPDATE stories SET status = 'queued' WHERE status = 'running'")
@@ -100,8 +101,12 @@ class StoryWorker:
         self.db.update_story(sid, status="running", stage="распознаю речь в мультфильме (долго для фильмов)",
                              progress=0.1, error=None)
         loop = asyncio.get_running_loop()
+        from .progress import Reporter
+
+        rep = Reporter(lambda stage, f: self.db.update_story(sid, stage=stage, progress=f), lo=0.05, hi=0.9)
+        heard = lambda f: rep("распознаю речь в мультфильме", f)   # noqa: E731
         try:
-            words = await loop.run_in_executor(None, self.transcriber(d / "words.json"), story["src_path"])
+            words = await loop.run_in_executor(None, self.transcriber(d / "words.json", heard), story["src_path"])
         except Exception as e:  # noqa: BLE001
             log.exception("расшифровка %s", sid)
             return await self._fail(story, f"не удалось распознать речь: {type(e).__name__}: {e}")
@@ -258,14 +263,21 @@ class StoryWorker:
         body = json.loads(item["body"])
         d = story_dir(self.s, story["id"])
         out = d / f"out_{item['id']}.mp4"
-        self.db.update_story_script(item["id"], status="running")
-        tr = partial(whisper_transcribe, model_size=self.s.whisper_model,
+        self.db.update_story_script(item["id"], status="running", progress=0, stage="начинаю")
+        from .progress import Reporter
+
+        rep = Reporter(lambda stage, f: self.db.update_story_script(item["id"], stage=stage, progress=f))
+        is_tts = (item["voice_src"] or "").startswith("tts") and not (item["voice_path"] and Path(item["voice_path"]).exists())
+        build_rep = rep.sub(0.25 if is_tts else 0.0, 1.0)
+        voice_heard = lambda f: build_rep("распознаю голос", 0.35 * f)   # noqa: E731
+        tr = partial(whisper_transcribe, model_size=self.s.whisper_model, progress=voice_heard,
                      language=story["lang"] if story["lang"] in ("ru", "en") else None)
         voice_path = item["voice_path"]
         if (item["voice_src"] or "").startswith("tts") and not (voice_path and Path(voice_path).exists()):
             voice = (item["voice_src"] or "tts:").split(":", 1)[1] or self.s.tts_voice
             voice_path = str(d / f"voice_{item['id']}_google.wav")
             text = " ".join(ln["text"] for ln in body["lines"])
+            rep("озвучиваю голосом Google", 0.02)
             try:
                 await asyncio.get_running_loop().run_in_executor(None, partial(
                     gtts.synthesize, text, voice_path, self.s.gemini_api_key, voice, story["lang"] or "ru"))
@@ -279,7 +291,7 @@ class StoryWorker:
             self.db.update_story_script(item["id"], voice_path=voice_path)
         try:
             await asyncio.get_running_loop().run_in_executor(None, partial(
-                build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}"))
+                build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}", build_rep))
         except Exception as e:  # noqa: BLE001
             log.exception("сборка %s", item["id"])
             self.db.update_story_script(item["id"], status="failed", error=f"{type(e).__name__}: {e}"[:500])
@@ -289,7 +301,7 @@ class StoryWorker:
         finally:
             shutil.rmtree(d / f"tmp_{item['id']}", ignore_errors=True)
         token = secrets.token_urlsafe(24)
-        self.db.update_story_script(item["id"], status="done", out_path=str(out), dl_token=token,
+        self.db.update_story_script(item["id"], status="done", out_path=str(out), dl_token=token, progress=1,
                                     finished_at=iso(utcnow()))
         caption = f"✅ <b>{esc(body['title'])}</b>\nНазвание для YouTube можно взять это же."
         sent = False
@@ -352,6 +364,7 @@ class StoryApi:
         for it in self.db.story_scripts(st["id"]):
             body = json.loads(it["body"])
             scripts.append({"id": it["id"], "status": it["status"], "error": it["error"],
+                            "progress": it["progress"], "stage": it["stage"],
                             "title": body["title"], "kind": body["kind"], "overlay": body["overlay"],
                             "why": body["why"], "text": "\n".join(ln["text"] for ln in body["lines"]),
                             "link": f"/sdl/{it['dl_token']}" if it["dl_token"] else None})

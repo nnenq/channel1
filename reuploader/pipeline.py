@@ -151,26 +151,36 @@ def pick(sources, exclude_ids, count=1, scan_limit=200, min_views=0, strategy="t
     return rank([v for v in pool if v["id"] not in exclude_ids], **opts)[:count]
 
 
-def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None, fit_tolerance=0.05):
+def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None, fit_tolerance=0.05, progress=None):
     """Скачивает видео, при необходимости подгоняет длину (умная обрезка) и применяет эффекты.
 
     fit_target — целевая длина, сек (None — не резать). Результат подгонки — в meta["fit"]:
     отчёт smart_cut или {"status": "error", ...}; при ошибке заливаем без обрезки.
+    progress(этап, доля 0..1 всей подготовки) — для процентов в панели.
     Возвращает (src, out, meta)."""
     from .effects import apply_effects, randomize
     from .source import download
 
+    def part(stage, lo, hi):          # доля внутри этапа -> доля всей подготовки
+        return (lambda f: progress(stage, lo + (hi - lo) * f)) if progress else None
+
+    fx_from = 0.6 if fit_target else 0.35
     work = Path(work_dir)
-    src, meta = download(video_url, work)
+    if progress:
+        progress("скачиваю видео", 0.0)
+        src, meta = download(video_url, work, progress=part("скачиваю видео", 0.0, 0.35))
+    else:
+        src, meta = download(video_url, work)
     fx_input = src
     meta["fit"] = None
     if fit_target:
         from .smartcut import smart_cut
 
         cut = work / f"{meta['id']}.fit.mp4"
+        cut_prog = (lambda stage, f: progress(f"подгоняю длину: {stage}", 0.35 + 0.25 * f)) if progress else None
         try:
             report = smart_cut(src, cut, fit_target, tolerance=fit_tolerance, transcriber=transcriber,
-                               work_dir=work / "fit_tmp")
+                               work_dir=work / "fit_tmp", progress=cut_prog)
             meta["fit"] = report
             if report["status"] != "already_short" and cut.exists():
                 fx_input = cut
@@ -185,19 +195,22 @@ def prepare(video_url, work_dir, effects, fit_target=None, transcriber=None, fit
         from .smartcut.media import probe
         from .subtitles import to_ass
 
+        if progress:
+            progress("распознаю речь для субтитров", fx_from)
         try:
             info = probe(fx_input)
             subs = to_ass(transcriber(fx_input), info.width, info.height, work / "subs.ass")
             meta["subs"] = "ok" if subs else "no_speech"
         except Exception as e:  # noqa: BLE001 — без субтитров, но ролик всё равно выйдет
             meta["subs"] = f"error: {type(e).__name__}: {e}"[:200]
+    fx_prog = part("уникализирую видео", fx_from + 0.05 if subs else fx_from, 1.0)
     try:
-        apply_effects(fx_input, out, fx, subs)
+        apply_effects(fx_input, out, fx, subs, progress=fx_prog)
     except Exception:
         if not subs:
             raise
         meta["subs"] = "error: не удалось вшить субтитры"
-        apply_effects(fx_input, out, fx)
+        apply_effects(fx_input, out, fx, progress=fx_prog)
     return src, out, meta
 
 

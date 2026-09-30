@@ -408,10 +408,11 @@ async function showProject(id, data) {
 
     <h2>План</h2>
     <div class="card">
-      ${fold(data.slots, "slots", foldStart(data.slots)).map(s => `<div class="row"><span class="status">${STATUS[s.status] || ""}</span>
+      ${fold(data.slots, "slots", foldStart(data.slots)).map(s => `<div class="row" id="slot${s.id}"><span class="status">${STATUS[s.status] || ""}</span>
         <div class="grow"><div class="ellipsis">${s.date === data.today ? "" : s.date.slice(8) + "." + s.date.slice(5, 7) + " "}<b>${s.time}</b>
           ${s.title ? "— " + esc(s.title) : `<span class="sub">— ${s.video_url ? "выбранное видео" : "авто-выбор"}</span>`}</div>
-          ${s.info && s.status !== "planned" ? `<div class="sub ellipsis">${s.status === "done" ? `<a href="#" onclick="openLink('${esc(s.info)}');return false">${esc(s.info)}</a>` : esc(s.info)}</div>` : ""}
+          ${s.status === "running" ? slotProgressHtml(s) : ""}
+          ${s.info && !["planned", "running"].includes(s.status) ? `<div class="sub ellipsis">${s.status === "done" ? `<a href="#" onclick="openLink('${esc(s.info)}');return false">${esc(s.info)}</a>` : esc(s.info)}</div>` : ""}
           ${s.retry ? `<div class="sub">повторная попытка</div>` : ""}</div>
         ${s.status === "planned" ? `<button class="x" onclick="cancelSlot(${s.id})">×</button>` : ""}
         ${s.upload_id ? `<button class="bin" title="Удалить ролик" onclick="delUpload(${s.upload_id}, true)">🗑</button>` : ""}</div>`).join("")
@@ -473,6 +474,7 @@ async function showProject(id, data) {
 
     <div style="margin-top:24px"><button class="danger wide" onclick="delProject()">Удалить проект</button></div>`;
   updateSaveUI();
+  if (data.slots.some(s => s.status === "running")) watchProgress(0);
 }
 
 const pid = () => state.project.id;
@@ -559,11 +561,44 @@ function addTime() {
   if (t) stage({ fixed_times: [...new Set([...cur().fixed_times, t])].sort() });
 }
 function delTime(t) { stage({ fixed_times: cur().fixed_times.filter(x => x !== t) }); }
+// ---------- проценты выполнения ----------
+const pct = f => Math.max(0, Math.min(100, Math.round((f || 0) * 100))) + "%";
+function slotProgressHtml(s) {
+  return `<div class="sub slotp"><b>${pct(s.progress)}</b> · ${esc(s.info || "в работе")}</div>
+    <div class="slotbar" style="margin-top:4px">${progressBar(s.progress || 0.01)}</div>`;
+}
+let progressPoll = null, progressUntil = 0;
+function watchProgress(ms = 120000) {           // после «Залить сейчас» и т.п. — следим, пока идёт работа
+  progressUntil = Math.max(progressUntil, Date.now() + ms);
+  clearTimeout(progressPoll);
+  progressPoll = setTimeout(pollProgress, 1500);
+}
+async function pollProgress() {
+  const id = state.project?.id;
+  if (!id || location.hash !== "#p" + id) return;
+  const d = await api("GET", `/api/projects/${id}/progress`).catch(() => null);
+  if (!d) { progressPoll = setTimeout(pollProgress, 5000); return; }
+  const shown = [...document.querySelectorAll('[id^="slot"]')].map(el => +el.id.slice(4));
+  const running = new Set(d.running.map(r => r.id));
+  for (const r of d.running) {
+    const row = document.getElementById("slot" + r.id);
+    if (!row) continue;
+    const box = row.querySelector(".grow");
+    const p = row.querySelector(".slotp"), bar = row.querySelector(".slotbar");
+    if (p && bar) { p.innerHTML = `<b>${pct(r.progress)}</b> · ${esc(r.info || "в работе")}`; bar.innerHTML = progressBar(r.progress || 0.01); }
+    else { row.querySelector(".status").textContent = "⏳"; box.insertAdjacentHTML("beforeend", slotProgressHtml(r)); }
+  }
+  // что-то закончилось (было «в работе», теперь нет) — обновим страницу, если нет несохранённых правок
+  const finished = (state.slots || []).some(s => s.status === "running" && !running.has(s.id)) ||
+    shown.some(sid => document.querySelector(`#slot${sid} .slotp`) && !running.has(sid));
+  if (finished && !isDirty()) { reload(); return; }
+  if (running.size || Date.now() < progressUntil) progressPoll = setTimeout(pollProgress, running.size ? 2000 : 4000);
+}
 async function publishAuto() {
   if (!await confirmMsg("Залить один ролик прямо сейчас? Бот сам выберет видео по правилам проекта"
     + (isDirty() ? " (по сохранённым настройкам — несохранённые правки не учитываются)" : "") + ".")) return;
   const r = await guarded(() => api("POST", `/api/projects/${pid()}/publish`, { when: "auto" }));
-  if (r) { haptic("success"); toast("Выбираю ролик и заливаю — пришлю в чат"); reload(); }
+  if (r) { haptic("success"); toast("Выбираю ролик и заливаю — проценты видно в «Плане»"); reload(); watchProgress(); }
 }
 async function replan() {
   const d = await guarded(() => api("POST", `/api/projects/${pid()}/replan`));
@@ -743,7 +778,7 @@ async function storyUpload() {
   let offset = 0, retries = 0;
   while (offset < f.size) {
     box.innerHTML = `<div class="card"><div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-      <div>Загрузка «${esc(f.name)}»: ${fmtSize(offset)} из ${fmtSize(f.size)}</div>${progressBar(offset / f.size)}
+      <div>Загрузка «${esc(f.name)}»: <b>${pct(offset / f.size)}</b> · ${fmtSize(offset)} из ${fmtSize(f.size)}</div>${progressBar(offset / f.size)}
       <div class="sub">Не закрывай панель до конца загрузки.</div></div></div>`;
     try {
       const res = await fetch(`/api/stories/${st.id}/chunk?offset=${offset}`, { method: "PUT",
@@ -777,7 +812,8 @@ function renderStory(st) {
   const f = storyForm, ai = storyMeta?.ai_available;
   let html = `<div class="card"><div class="row"><div class="grow" style="min-width:0"><b class="ellipsis">${esc(st.filename)}</b>
     <div class="sub">${STORY_STATUS[st.status] || st.status}${st.stage && !["scripts", "uploaded"].includes(st.status) ? " · " + esc(st.stage) : ""}</div></div></div>`;
-  if (["queued", "running"].includes(st.status)) html += `<div class="row">${progressBar(st.progress || 0.05)}</div>`;
+  if (["queued", "running"].includes(st.status)) html += `<div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+      <div><b>${pct(st.progress)}</b>${st.stage ? " · " + esc(st.stage) : ""}</div>${progressBar(st.progress || 0.02)}</div>`;
   if (st.status === "failed" && st.error) html += `<div class="row sub">❌ ${esc(st.error)}</div>`;
   if (st.status === "confirm" && st.estimate) {
     html += `<div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
@@ -809,6 +845,8 @@ function renderStory(st) {
   if (st.scripts.length) {
     html += `<h2>Сценарии</h2>` + st.scripts.map(x => `<div class="card" style="margin-bottom:10px">
       <div class="row"><div class="grow"><b>${esc(x.title)}</b><div class="sub">${x.kind === "theory" ? "теория" : "пересказ"} · ${SCRIPT_STATUS[x.status] || x.status}</div></div></div>
+      ${x.status === "running" ? `<div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div><b>${pct(x.progress)}</b>${x.stage ? " · " + esc(x.stage) : ""}</div>${progressBar(x.progress || 0.02)}</div>` : ""}
       ${x.overlay ? `<div class="row sub">Надпись сверху: «${esc(x.overlay)}»</div>` : ""}
       ${x.why && x.why !== "свой текст" ? `<div class="row sub">💡 ${esc(x.why)}</div>` : ""}
       <div class="row" style="white-space:pre-wrap">${esc(x.text)}</div>
@@ -946,7 +984,7 @@ async function uploadChunks(jid, file, offset, chunk) {
   let retries = 0;
   while (offset < file.size) {
     box.innerHTML = `<div class="card"><div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-      <div>Загрузка «${esc(file.name)}»: ${fmtSize(offset)} из ${fmtSize(file.size)}</div>${progressBar(offset / file.size)}
+      <div>Загрузка «${esc(file.name)}»: <b>${pct(offset / file.size)}</b> · ${fmtSize(offset)} из ${fmtSize(file.size)}</div>${progressBar(offset / file.size)}
       <div class="sub">Не закрывай панель до конца загрузки.</div></div></div>`;
     try {
       const res = await fetch(`/api/cut/${jid}/chunk?offset=${offset}`, { method: "PUT",

@@ -22,7 +22,7 @@ from ..smartcut.analyze import whisper_transcribe
 from ..smartcut.core import cached_transcriber
 from ..smartcut.media import probe
 from ..story import script as sc
-from ..story import tts as gtts
+from ..story import eleven
 from ..story.assemble import build_story
 from .db import iso, utcnow
 from .telegram import esc
@@ -32,6 +32,8 @@ CHUNK = 8 * 1024 * 1024
 TG_SEND_MAX_MB = 49
 SAFE_NAME = re.compile(r"[^\w.\- ()\[\]а-яА-ЯёЁ]+")
 KINDS = ("recap", "theory", "auto", "manual", "chat")
+VOICE_ID = re.compile(r"^[A-Za-z0-9_-]{6,64}$")
+NO_KEY = ("Нет твоего ключа ElevenLabs — впиши его в панели: «Пересказы и теории» → «Озвучка ElevenLabs»")
 VOICE_HINT = ("🎙 <b>Ответь на это сообщение голосовым</b> — прочитай текст выше своим голосом "
               "(можно своими словами, главное — по порядку). Я соберу ролик: кадры мультфильма под каждую "
               "фразу, твой голос и субтитры.")
@@ -186,38 +188,43 @@ class StoryWorker:
             return await self._fail(story, note or "сценариев нет")
         await self._deliver(story, scripts)
 
-    def tts_available(self):
-        return bool(self.s.gemini_api_key)
+    def tts_available(self, uid):
+        """Озвучка ElevenLabs — только своим ключом пользователя (ключ владельца бота другим не достаётся)."""
+        return bool(self.db.eleven(uid)[0])
 
     async def _deliver(self, story, bodies):
         sid, uid = story["id"], story["user_id"]
         start = len(self.db.story_scripts(sid))
-        auto = bool(story["tts"]) and self.tts_available()
+        auto = bool(story["tts"]) and self.tts_available(uid)
         for i, body in enumerate(bodies):
             scid = self.db.add_story_script(sid, start + i, body)
             await self.send_script(self.db.story_script(scid), uid)
             if auto:
                 self.request_tts(self.db.story_script(scid), story["tts_voice"])
         self.db.update_story(sid, status="scripts", progress=1,
-                             stage=f"сценариев: {len(bodies)} — " + ("озвучиваю голосом Google" if auto else "жду голос"))
+                             stage=f"сценариев: {len(bodies)} — " + ("озвучиваю через ElevenLabs" if auto else "жду голос"))
         if auto:
-            await self.bot.tg.send(uid, "🤖 Озвучиваю сценарии голосом Google и собираю ролики — пришлю сюда.")
+            await self.bot.tg.send(uid, "🤖 Озвучиваю сценарии через ElevenLabs и собираю ролики — пришлю сюда.")
 
     def request_tts(self, item, voice=None):
-        """Озвучить сценарий голосом Google вместо своего. -> (ok, текст)."""
-        if not self.tts_available():
-            return False, "Нет ключа GEMINI_API_KEY в .env (бесплатно: aistudio.google.com/apikey)"
+        """Озвучить сценарий через ElevenLabs (ключом автора ролика) вместо своего голоса. -> (ok, текст)."""
+        story = self.db.story(item["story_id"])
+        key, saved = self.db.eleven(story["user_id"])
+        if not key:
+            return False, NO_KEY
         if item["status"] in ("queued", "running"):
             return False, "Этот ролик уже собирается"
-        voice = voice if voice in gtts.VOICES else self.s.tts_voice
+        voice = next((v for v in (voice, story["tts_voice"], saved) if v and VOICE_ID.match(v)), None)
+        if not voice:
+            return False, "Выбери голос в панели: «Пересказы и теории» → «Озвучка ElevenLabs»"
         self.db.update_story_script(item["id"], status="queued", voice_src="tts:" + voice, voice_path=None, error=None)
         self.poke()
         return True, "Озвучиваю и собираю ролик"
 
     async def send_script(self, item, uid):
         body = json.loads(item["body"])
-        buttons = ([[{"text": "🤖 Озвучить голосом Google (бесплатно)", "callback_data": f"st_tts:{item['id']}"}]]
-                   if self.tts_available() else None)
+        buttons = ([[{"text": "🤖 Озвучить через ElevenLabs", "callback_data": f"st_tts:{item['id']}"}]]
+                   if self.tts_available(uid) else None)
         msg = await self.bot.tg.send(uid, script_text(body)[:4000], buttons)
         if msg:
             self.db.update_story_script(item["id"], tg_chat=uid, tg_message_id=msg["message_id"])
@@ -274,16 +281,17 @@ class StoryWorker:
                      language=story["lang"] if story["lang"] in ("ru", "en") else None)
         voice_path = item["voice_path"]
         if (item["voice_src"] or "").startswith("tts") and not (voice_path and Path(voice_path).exists()):
-            voice = (item["voice_src"] or "tts:").split(":", 1)[1] or self.s.tts_voice
-            voice_path = str(d / f"voice_{item['id']}_google.wav")
+            key, saved = self.db.eleven(story["user_id"])
+            voice = (item["voice_src"] or "tts:").split(":", 1)[1] or saved
+            voice_path = str(d / f"voice_{item['id']}_eleven.wav")
             text = " ".join(ln["text"] for ln in body["lines"])
-            rep("озвучиваю голосом Google", 0.02)
+            rep("озвучиваю через ElevenLabs", 0.02)
             try:
                 await asyncio.get_running_loop().run_in_executor(None, partial(
-                    gtts.synthesize, text, voice_path, self.s.gemini_api_key, voice, story["lang"] or "ru"))
+                    eleven.synthesize, text, voice_path, key, voice))
             except Exception as e:  # noqa: BLE001
                 log.warning("озвучка %s: %s", item["id"], e)
-                self.db.update_story_script(item["id"], status="failed", error=f"озвучка Google: {e}"[:500])
+                self.db.update_story_script(item["id"], status="failed", error=f"озвучка ElevenLabs: {e}"[:500])
                 await self.bot.tg.send(story["user_id"], f"❌ Не получилось озвучить «{esc(body['title'])}»: "
                                                          f"{esc(str(e))[:400]}\nМожно ответить на сценарий "
                                                          f"своим голосовым.")
@@ -331,7 +339,9 @@ def setup(webapp, router):
     router.add_post("/api/stories/{sid}/prompt/send", api.send_prompt)
     router.add_delete("/api/stories/{sid}", api.delete)
     router.add_get("/sdl/{token}", api.download)
-    router.add_get("/api/tts/preview", api.tts_preview)
+    router.add_get("/api/eleven", api.eleven_get)
+    router.add_put("/api/eleven", api.eleven_put)
+    router.add_delete("/api/eleven", api.eleven_delete)
     return api
 
 
@@ -340,6 +350,7 @@ class StoryApi:
         self.w = webapp
         self.db = webapp.db
         self.s = webapp.s
+        self._voices = {}        # uid -> (время, отпечаток ключа, голоса): не дёргать ElevenLabs на каждый показ
 
     @property
     def worker(self):
@@ -379,9 +390,7 @@ class StoryApi:
         return web.json_response({"stories": [self._json(s) for s in self.db.stories(uid)], "chunk": CHUNK,
                                   "max_mb": self.s.story_max_mb, "max_minutes": self.s.story_max_minutes,
                                   "ai_available": self.w.bot.cut.ai_allowed(uid),
-                                  "tts_available": self.worker.tts_available(), "voices": gtts.VOICES,
-                                  "voice_info": gtts.VOICE_INFO,
-                                  "tts_voice": self.s.tts_voice})
+                                  "tts_available": self.worker.tts_available(uid)})
 
     async def get(self, request):
         return web.json_response(self._json(self._story(request)))
@@ -461,8 +470,11 @@ class StoryApi:
             raise ApiError("Напиши текст ролика (хотя бы пару предложений).")
         if kind not in ("manual", "chat") and not self.w.bot.cut.ai_allowed(request["user"]["id"]):
             raise ApiError("AI-сценарии доступны владельцу бота. Выбери «Свой текст».")
-        voice = body.get("tts_voice") if body.get("tts_voice") in gtts.VOICES else None
-        self.db.update_story(st["id"], tts=int(bool(body.get("tts")) and self.worker.tts_available()), tts_voice=voice)
+        voice = str(body.get("tts_voice") or "")
+        voice = voice if VOICE_ID.match(voice) else None
+        uid = request["user"]["id"]
+        self.db.update_story(st["id"], tts=int(bool(body.get("tts")) and self.worker.tts_available(uid)),
+                             tts_voice=voice)
         self.db.update_story(st["id"], status="queued", stage="в очереди", progress=0, kind=kind, lang=lang,
                              count=count, seconds=seconds, topic=str(body.get("topic") or "")[:100] or None,
                              manual_text=text or None, ai_state=None, estimate=None, error=None)
@@ -511,28 +523,68 @@ class StoryApi:
             raise ApiError(text)
         return web.json_response(self._json(self.db.story(st["id"])))
 
-    async def tts_preview(self, request):
-        """Короткий образец голоса (кэшируется: повторное прослушивание не тратит лимит Google)."""
+    # ---------- личный ключ ElevenLabs ----------
+    async def _voices_for(self, uid, key, fresh=False):
+        import hashlib
+        import time
+
+        mark = hashlib.sha256(key.encode()).hexdigest()[:16]
+        hit = self._voices.get(uid)
+        if hit and not fresh and hit[1] == mark and time.monotonic() - hit[0] < 600:
+            return hit[2]
+        vs = await asyncio.get_running_loop().run_in_executor(None, eleven.voices, key)
+        self._voices[uid] = (time.monotonic(), mark, vs)
+        return vs
+
+    async def _eleven_state(self, uid, fresh=False):
+        key, voice = self.db.eleven(uid)
+        out = {"has_key": bool(key), "masked": eleven.mask(key) if key else "", "voice": voice,
+               "voices": [], "quota": None, "error": None}
+        if key:
+            try:
+                out["voices"] = await self._voices_for(uid, key, fresh)
+            except eleven.TTSError as e:
+                out["error"] = str(e)
+            q = await asyncio.get_running_loop().run_in_executor(None, eleven.quota, key)
+            out["quota"] = {"used": q[0], "limit": q[1]} if q else None
+        return out
+
+    async def eleven_get(self, request):
+        return web.json_response(await self._eleven_state(request["user"]["id"]))
+
+    async def eleven_put(self, request):
+        """{"key": "..."} — вписать/заменить свой ключ (проверяется запросом голосов); {"voice": id} — выбрать голос."""
         from .web import ApiError
 
-        voice = request.query.get("voice", "")
-        lang = request.query.get("lang", "ru") if request.query.get("lang") in ("ru", "en") else "ru"
-        if voice not in gtts.VOICES:
-            raise ApiError("Неизвестный голос.")
-        if not self.worker.tts_available():
-            raise ApiError("Нет ключа GEMINI_API_KEY в .env (бесплатно: aistudio.google.com/apikey).")
-        d = self.s.data_dir / "tts_preview"
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{voice}_{lang}.wav"
-        if not path.exists():
-            tmp = path.with_suffix(".tmp.wav")
+        uid = request["user"]["id"]
+        body = await request.json()
+        if body.get("key") is not None:
+            key = str(body["key"]).strip()
+            if not 20 <= len(key) <= 200 or any(c.isspace() for c in key):
+                raise ApiError("Это не похоже на ключ ElevenLabs (он выглядит как sk_… длиной ~50 символов).")
             try:
-                await asyncio.get_running_loop().run_in_executor(None, partial(
-                    gtts.synthesize, gtts.PREVIEW[lang], tmp, self.s.gemini_api_key, voice, lang))
-            except gtts.TTSError as e:
-                raise ApiError(str(e)) from None
-            tmp.replace(path)
-        return web.FileResponse(path, headers={"Content-Type": "audio/wav", "Cache-Control": "private, max-age=86400"})
+                vs = await asyncio.get_running_loop().run_in_executor(None, eleven.voices, key)
+            except eleven.TTSError as e:
+                raise ApiError(f"Ключ не подошёл: {e}") from None
+            _, voice = self.db.eleven(uid)
+            if not any(v["id"] == voice for v in vs):
+                voice = vs[0]["id"] if vs else ""
+            self.db.set_eleven(uid, key=key, voice=voice)
+            self._voices.pop(uid, None)
+        if body.get("voice") is not None:
+            voice = str(body["voice"])
+            if not VOICE_ID.match(voice):
+                raise ApiError("Неизвестный голос.")
+            if not self.db.eleven(uid)[0]:
+                raise ApiError("Сначала впиши ключ ElevenLabs.")
+            self.db.set_eleven(uid, voice=voice)
+        return web.json_response(await self._eleven_state(uid))
+
+    async def eleven_delete(self, request):
+        uid = request["user"]["id"]
+        self.db.set_eleven(uid, key="", voice="")
+        self._voices.pop(uid, None)
+        return web.json_response(await self._eleven_state(uid))
 
     async def tts(self, request):
         from .web import ApiError

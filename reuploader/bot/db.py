@@ -79,6 +79,13 @@ CREATE TABLE IF NOT EXISTS users (
     status TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Личные ключи пользователей к внешним сервисам (озвучка ElevenLabs). Никогда не отдаются целиком.
+CREATE TABLE IF NOT EXISTS user_keys (
+    user_id INTEGER PRIMARY KEY,
+    eleven_key TEXT,
+    eleven_voice TEXT,
+    updated_at TEXT NOT NULL
+);
 -- Одноразовые ссылки-приглашения
 CREATE TABLE IF NOT EXISTS invites (
     code TEXT PRIMARY KEY,
@@ -219,7 +226,7 @@ MIGRATIONS = [
     ("uploads", "checked_at", "TEXT"),
     ("projects", "topic", "TEXT NOT NULL DEFAULT ''"),
     ("story_scripts", "voice_src", "TEXT"),          # user | tts
-    ("stories", "tts", "INTEGER NOT NULL DEFAULT 0"),  # сразу озвучивать голосом Google
+    ("stories", "tts", "INTEGER NOT NULL DEFAULT 0"),  # сразу озвучивать через ElevenLabs
     ("stories", "tts_voice", "TEXT"),
     ("slots", "progress", "REAL"),
     ("story_scripts", "progress", "REAL"),
@@ -477,6 +484,20 @@ class DB:
 
     def delete_user(self, uid):
         self.x("DELETE FROM users WHERE id = ?", uid)
+
+    # --- личный ключ ElevenLabs ---
+    def eleven(self, uid):
+        """-> (ключ, голос) пользователя; ('', '') если не вписан."""
+        r = self.one("SELECT eleven_key, eleven_voice FROM user_keys WHERE user_id = ?", uid)
+        return (r["eleven_key"] or "", r["eleven_voice"] or "") if r else ("", "")
+
+    def set_eleven(self, uid, key=None, voice=None):
+        """None — не менять; '' — стереть."""
+        old_key, old_voice = self.eleven(uid)
+        self.x("""INSERT INTO user_keys(user_id, eleven_key, eleven_voice, updated_at) VALUES(?, ?, ?, ?)
+                  ON CONFLICT(user_id) DO UPDATE SET eleven_key = excluded.eleven_key,
+                    eleven_voice = excluded.eleven_voice, updated_at = excluded.updated_at""",
+               uid, old_key if key is None else key, old_voice if voice is None else voice, iso(utcnow()))
 
     def create_invite(self, code):
         self.x("INSERT INTO invites(code, created_at) VALUES(?, ?)", code, iso(utcnow()))

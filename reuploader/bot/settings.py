@@ -23,8 +23,6 @@ class Settings:
     whisper_model: str = "small"
     story_max_mb: int = 6144
     story_max_minutes: int = 180
-    gemini_api_key: str = ""
-    tts_voice: str = "Puck"
 
     @property
     def db_path(self):
@@ -75,6 +73,4 @@ def load_settings():
         whisper_model=os.getenv("WHISPER_MODEL", "small"),
         story_max_mb=int(os.getenv("STORY_MAX_MB", "6144")),
         story_max_minutes=int(os.getenv("STORY_MAX_MINUTES", "180")),
-        gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
-        tts_voice=os.getenv("TTS_VOICE", "Puck").strip() or "Puck",
     )

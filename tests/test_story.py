@@ -302,96 +302,116 @@ def _wav_bytes(seconds=1.0, rate=24000):
     return buf.getvalue()
 
 
-def test_tts_chunks_joins_and_retries(tmp_path):
-    import urllib.error
-    from reuploader.story import tts
-    text = ("Первое предложение истории. " * 60).strip()
-    parts = tts.chunks(text, limit=300)
-    assert len(parts) > 1 and all(len(p) <= 300 for p in parts)
+KEY = "sk_" + "a1" * 24
+
+
+def test_eleven_chunks_joins_and_retries(tmp_path):
+    import wave
+    from reuploader.story import eleven
+    text = ("Первое предложение истории. " * 300).strip()
+    parts = eleven.chunks(text)
+    assert len(parts) > 1 and all(len(p) <= eleven.MAX_CHARS for p in parts)
     calls, sleeps = [], []
 
-    def fake(part, voice, style, model, key):
-        calls.append((part, voice, style, key))
+    def fake(method, path, key, body=None):
+        calls.append((method, path, key, body))
         if len(calls) == 1:
-            raise urllib.error.HTTPError("u", 429, "limit", {}, None)
-        return _wav_bytes(0.5)
-    out = tts.synthesize(text, tmp_path / "v.wav", "KEY", voice="Kore", request=fake, sleep=sleeps.append)
-    import wave
+            raise eleven.TTSError("ElevenLabs 429: too_many_concurrent_requests")
+        return b"\x01\x00" * 12000
+    out = eleven.synthesize(text, tmp_path / "v.wav", KEY, "voice123", request=fake, sleep=sleeps.append)
     with wave.open(str(out)) as w:
-        n = len(tts.chunks(text))                            # synthesize режет по MAX_CHARS
-        assert n > 1 and w.getframerate() == 24000 and w.getnframes() >= 24000 * 0.75 * n
-    assert sleeps == [20] and calls[-1][1] == "Kore" and "рассказчик" in calls[-1][2]
-    with pytest.raises(tts.TTSError):
-        tts.synthesize("текст", tmp_path / "x.wav", "")
-    raw_pcm = tts.synthesize("Hello there.", tmp_path / "p.wav", "K", lang="en",
-                             request=lambda *a: b"\x00\x00" * 2400)          # «голый» PCM тоже понимаем
-    assert raw_pcm.exists()
+        assert w.getframerate() == 24000 and w.getnframes() == 12000 * len(parts)
+    assert sleeps == [5] and calls[-1][1] == "/v1/text-to-speech/voice123?output_format=pcm_24000"
+    assert calls[-1][2] == KEY and calls[-1][3]["model_id"] == "eleven_multilingual_v2"
+    assert "previous_text" in calls[-1][3] and "next_text" in calls[1][3]
+    with pytest.raises(eleven.TTSError):
+        eleven.synthesize("текст", tmp_path / "x.wav", "", "voice123")
+    e = eleven._error(401, '{"detail": {"status": "quota_exceeded", "message": "x"}}')
+    assert "символы" in str(e)
+    assert "ключ" in str(eleven._error(401, '{"detail": {"status": "invalid_api_key"}}'))
+    assert eleven.mask(KEY) == "sk_…a1a1" and KEY not in eleven.mask(KEY)
 
 
-def test_google_voice_instead_of_own(bot_env, media, monkeypatch):
+def _fake_voices(key, request=None):
+    from reuploader.story import eleven
+    if key != KEY:
+        raise eleven.TTSError("ElevenLabs отклонил ключ")
+    return [{"id": "voiceAAA1", "name": "Adam", "info": "male, deep", "preview": "https://x/a.mp3"},
+            {"id": "voiceBBB2", "name": "Rachel", "info": "female", "preview": "https://x/r.mp3"}]
+
+
+def test_eleven_voice_instead_of_own(bot_env, media, monkeypatch):
     e = bot_env
     from reuploader.bot import stories
-    e.s.gemini_api_key = "KEY"
     spoken = []
 
-    def fake_synth(text, path, key, voice, lang):
+    def fake_synth(text, path, key, voice):
         spoken.append((text, voice, key))
-        shutil.copy(media[0] / "voice.ogg", path)        # «голос Google»
+        shutil.copy(media[0] / "voice.ogg", path)        # «голос ElevenLabs»
         return path
-    monkeypatch.setattr(stories.gtts, "synthesize", fake_synth)
+    monkeypatch.setattr(stories.eleven, "synthesize", fake_synth)
     sid = e.new_story(text=" ".join(w.text for w in e.voice_words))
     asyncio.run(e.w.run(e.db.story(sid)))
     item = e.db.story_scripts(sid)[0]
+    assert e.tg.sent[-1][1] is None                       # нет своего ключа — нет кнопки
+    ok, text = e.w.request_tts(item, "voiceAAA1")
+    assert not ok and "ElevenLabs" in text
+    e.db.set_eleven(777, key=KEY, voice="voiceBBB2")
+    e.db.set_eleven(555, key="sk_" + "zz" * 24, voice="other")   # ключ другого пользователя не трогаем
+    asyncio.run(e.w.send_script(item, 777))
     assert e.tg.sent[-1][1][0][0]["callback_data"] == f"st_tts:{item['id']}"   # кнопка под сценарием
-    ok, _ = e.w.request_tts(item, "Kore")
+    ok, _ = e.w.request_tts(item, "voiceAAA1")
     assert ok and e.db.story_script(item["id"])["status"] == "queued"
     asyncio.run(e.w.render(e.db.next_story_script()))
     done = e.db.story_script(item["id"])
-    assert done["status"] == "done" and spoken[0][1] == "Kore" and spoken[0][2] == "KEY"
+    assert done["status"] == "done" and spoken[0][1] == "voiceAAA1" and spoken[0][2] == KEY
     assert probe(done["out_path"]).height == 1920
 
 
 def test_auto_tts_after_scripts(bot_env, monkeypatch):
     e = bot_env
-    e.s.gemini_api_key = "KEY"
+    e.db.set_eleven(777, key=KEY, voice="voiceBBB2")
     sid = e.new_story(text="Смотри что сейчас будет. Это важно запомнить.")
-    e.db.update_story(sid, tts=1, tts_voice="Charon")
+    e.db.update_story(sid, tts=1)
     asyncio.run(e.w.run(e.db.story(sid)))
     item = e.db.story_scripts(sid)[0]
-    assert item["status"] == "queued" and item["voice_src"] == "tts:Charon"
-    e.s.gemini_api_key = ""
+    assert item["status"] == "queued" and item["voice_src"] == "tts:voiceBBB2"   # голос из настроек
+    e.db.set_eleven(777, key="", voice="")
     ok, text = e.w.request_tts(item)
-    assert not ok and "GEMINI_API_KEY" in text
+    assert not ok and "ключ" in text
 
 
-def test_voice_preview_is_cached(bot_env, monkeypatch):
+def test_own_eleven_key_api(bot_env, monkeypatch):
     e = bot_env
     from reuploader.bot import stories
     from reuploader.bot.web import WebApp
     from tests.test_e2e_helpers import init_data
-    calls = []
-
-    def fake_synth(text, path, key, voice, lang):
-        calls.append((voice, lang))
-        with open(path, "wb") as f:
-            f.write(_wav_bytes(0.3))
-        return path
-    monkeypatch.setattr(stories.gtts, "synthesize", fake_synth)
-    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u == 777, app_key="k", cut=e.w.bot.cut, stories=e.w)
+    monkeypatch.setattr(stories.eleven, "voices", _fake_voices)
+    monkeypatch.setattr(stories.eleven, "quota", lambda key: (1200, 10000))
+    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u in (777, 555), app_key="k", cut=e.w.bot.cut,
+                          stories=e.w)
 
     async def go():
         async with TestClient(TestServer(WebApp(e.db, e.s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
-            h = {"X-Init-Data": init_data(777)}
-            e.s.gemini_api_key = ""
-            nokey = (await c.get("/api/tts/preview?voice=Puck", headers=h)).status
-            e.s.gemini_api_key = "KEY"
-            r1 = await c.get("/api/tts/preview?voice=Fenrir&lang=ru", headers=h)
-            body = await r1.read()
-            r2 = await c.get("/api/tts/preview?voice=Fenrir&lang=ru", headers=h)
-            bad = (await c.get("/api/tts/preview?voice=Hacker", headers=h)).status
-            lst = await (await c.get("/api/stories", headers=h)).json()
-            return nokey, r1.status, r1.headers["Content-Type"], body[:4], r2.status, bad, lst
-    nokey, s1, ctype, head, s2, bad, lst = asyncio.run(go())
-    assert nokey == 400 and s1 == 200 and ctype == "audio/wav" and head == b"RIFF" and s2 == 200
-    assert calls == [("Fenrir", "ru")]                       # второй раз — из кэша, лимит Google не тратится
-    assert bad == 400 and len(lst["voices"]) == 30 and lst["voice_info"]["Charon"].startswith("информ")
+            me, friend = {"X-Init-Data": init_data(777)}, {"X-Init-Data": init_data(555)}
+            r = {"empty": await (await c.get("/api/eleven", headers=me)).json()}
+            r["bad"] = (await c.put("/api/eleven", json={"key": "sk_" + "b" * 40}, headers=me)).status
+            r["short"] = (await c.put("/api/eleven", json={"key": "abc"}, headers=me)).status
+            resp = await c.put("/api/eleven", json={"key": KEY}, headers=me)
+            r["saved"], r["saved_raw"] = await resp.json(), await resp.text()
+            r["voice"] = await (await c.put("/api/eleven", json={"voice": "voiceBBB2"}, headers=me)).json()
+            r["hack"] = (await c.put("/api/eleven", json={"voice": "../../x"}, headers=me)).status
+            r["friend"] = await (await c.get("/api/eleven", headers=friend)).json()
+            r["list"] = await (await c.get("/api/stories", headers=me)).json()
+            r["flist"] = await (await c.get("/api/stories", headers=friend)).json()
+            r["del"] = await (await c.delete("/api/eleven", headers=me)).json()
+            return r
+    r = asyncio.run(go())
+    assert r["empty"]["has_key"] is False and r["bad"] == 400 and r["short"] == 400
+    assert r["saved"]["has_key"] and r["saved"]["masked"] == "sk_…a1a1" and KEY not in r["saved_raw"]
+    assert r["saved"]["voice"] == "voiceAAA1" and len(r["saved"]["voices"]) == 2   # первый голос по умолчанию
+    assert r["saved"]["quota"] == {"used": 1200, "limit": 10000}
+    assert r["voice"]["voice"] == "voiceBBB2" and r["hack"] == 400
+    assert r["friend"]["has_key"] is False                  # друг ключом владельца не пользуется
+    assert r["list"]["tts_available"] is True and r["flist"]["tts_available"] is False
+    assert r["del"]["has_key"] is False and e.db.eleven(777) == ("", "")

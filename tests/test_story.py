@@ -360,3 +360,36 @@ def test_auto_tts_after_scripts(bot_env, monkeypatch):
     e.s.gemini_api_key = ""
     ok, text = e.w.request_tts(item)
     assert not ok and "GEMINI_API_KEY" in text
+
+
+def test_voice_preview_is_cached(bot_env, monkeypatch):
+    e = bot_env
+    from reuploader.bot import stories
+    from reuploader.bot.web import WebApp
+    from tests.test_e2e_helpers import init_data
+    calls = []
+
+    def fake_synth(text, path, key, voice, lang):
+        calls.append((voice, lang))
+        with open(path, "wb") as f:
+            f.write(_wav_bytes(0.3))
+        return path
+    monkeypatch.setattr(stories.gtts, "synthesize", fake_synth)
+    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u == 777, app_key="k", cut=e.w.bot.cut, stories=e.w)
+
+    async def go():
+        async with TestClient(TestServer(WebApp(e.db, e.s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
+            h = {"X-Init-Data": init_data(777)}
+            e.s.gemini_api_key = ""
+            nokey = (await c.get("/api/tts/preview?voice=Puck", headers=h)).status
+            e.s.gemini_api_key = "KEY"
+            r1 = await c.get("/api/tts/preview?voice=Fenrir&lang=ru", headers=h)
+            body = await r1.read()
+            r2 = await c.get("/api/tts/preview?voice=Fenrir&lang=ru", headers=h)
+            bad = (await c.get("/api/tts/preview?voice=Hacker", headers=h)).status
+            lst = await (await c.get("/api/stories", headers=h)).json()
+            return nokey, r1.status, r1.headers["Content-Type"], body[:4], r2.status, bad, lst
+    nokey, s1, ctype, head, s2, bad, lst = asyncio.run(go())
+    assert nokey == 400 and s1 == 200 and ctype == "audio/wav" and head == b"RIFF" and s2 == 200
+    assert calls == [("Fenrir", "ru")]                       # второй раз — из кэша, лимит Google не тратится
+    assert bad == 400 and len(lst["voices"]) == 30 and lst["voice_info"]["Charon"].startswith("информ")

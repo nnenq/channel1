@@ -19,7 +19,22 @@ log = logging.getLogger("story.tts")
 URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 DEFAULT_MODEL = "gemini-3.8-flash-tts"
 DEFAULT_VOICE = "Puck"
-VOICES = ["Puck", "Kore", "Charon", "Fenrir", "Aoede", "Zephyr", "Orus", "Leda", "Enceladus", "Sadachbia"]
+# Характер голосов — по описаниям Google (ai.google.dev/gemini-api/docs/speech-generation)
+VOICE_INFO = {
+    "Puck": "бодрый", "Fenrir": "возбуждённый, эмоциональный", "Sadachbia": "живой", "Laomedeia": "бодрый",
+    "Charon": "информативный, как диктор", "Sadaltager": "знающий", "Rasalgethi": "информативный",
+    "Enceladus": "с придыханием, таинственный", "Zephyr": "яркий", "Autonoe": "яркий", "Leda": "молодой",
+    "Aoede": "лёгкий", "Callirrhoe": "непринуждённый", "Umbriel": "непринуждённый", "Zubenelgenubi": "разговорный",
+    "Achird": "дружелюбный", "Sulafat": "тёплый", "Algieba": "плавный", "Despina": "плавный",
+    "Iapetus": "чёткий", "Erinome": "чёткий", "Algenib": "с хрипотцой", "Gacrux": "зрелый",
+    "Pulcherrima": "напористый", "Schedar": "ровный", "Kore": "строгий", "Orus": "строгий", "Alnilam": "строгий",
+    "Achernar": "мягкий", "Vindemiatrix": "нежный",
+}
+VOICES = list(VOICE_INFO)
+PREVIEW = {
+    "ru": "Губка Боб даже не догадывался, что его язык — это Планктон. И вот что случилось дальше…",
+    "en": "SpongeBob had no idea his tongue was actually Plankton. And here's what happened next…",
+}
 RATE = 24000
 MAX_CHARS = 1200          # кусок текста на один запрос
 STYLE = {

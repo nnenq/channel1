@@ -686,8 +686,28 @@ function storyTtsBlock() {
   const voice = f.tts_voice || m.tts_voice;
   return `<div class="row"><div class="grow">🤖 Сразу озвучить голосом Google<div class="sub">бесплатно; иначе — отвечаешь голосовым сам</div></div>
       <label class="switch"><input type="checkbox" ${f.tts ? "checked" : ""} onchange="storySet('tts', this.checked, true)"><span></span></label></div>
-    ${f.tts ? `<div class="row"><div class="grow">Голос</div><select onchange="storySet('tts_voice', this.value)">${(m.voices || []).map(v =>
-        `<option ${v === voice ? "selected" : ""}>${v}</option>`).join("")}</select></div>` : ""}`;
+    ${f.tts ? `<div class="row" style="flex-wrap:wrap"><div class="grow">Голос</div>
+        <select id="ttsVoice" onchange="storySet('tts_voice', this.value)">${(m.voices || []).map(v =>
+          `<option value="${v}" ${v === voice ? "selected" : ""}>${v} — ${esc((m.voice_info || {})[v] || "")}</option>`).join("")}</select>
+        <button class="ghost" id="ttsPlay" onclick="playVoice()">▶️ Послушать</button></div>
+      <div class="hint" style="padding:0 16px 6px">Для пересказов — Puck, Fenrir, Sadachbia; для теорий — Charon, Enceladus. Выбери один и держи его на канале.</div>` : ""}`;
+}
+let voiceAudio = null;
+async function playVoice() {
+  const voice = document.getElementById("ttsVoice")?.value, btn = document.getElementById("ttsPlay");
+  if (!voice) return;
+  if (voiceAudio) { voiceAudio.pause(); voiceAudio = null; }
+  btn.textContent = "⏳ Готовлю…"; btn.disabled = true;
+  try {
+    const res = await fetch(`/api/tts/preview?voice=${encodeURIComponent(voice)}&lang=${storyForm.lang}`,
+      { headers: { "X-Init-Data": tg?.initData || "" } });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Ошибка " + res.status);
+    voiceAudio = new Audio(URL.createObjectURL(await res.blob()));
+    btn.textContent = "🔊 Играет…";
+    voiceAudio.onended = () => { btn.textContent = "▶️ Послушать"; };
+    await voiceAudio.play();
+  } catch (e) { alertMsg(e.message); btn.textContent = "▶️ Послушать"; }
+  finally { btn.disabled = false; }
 }
 
 async function showStories(sid) {

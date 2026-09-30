@@ -319,6 +319,7 @@ def setup(webapp, router):
     router.add_post("/api/stories/{sid}/prompt/send", api.send_prompt)
     router.add_delete("/api/stories/{sid}", api.delete)
     router.add_get("/sdl/{token}", api.download)
+    router.add_get("/api/tts/preview", api.tts_preview)
     return api
 
 
@@ -366,6 +367,7 @@ class StoryApi:
                                   "max_mb": self.s.story_max_mb, "max_minutes": self.s.story_max_minutes,
                                   "ai_available": self.w.bot.cut.ai_allowed(uid),
                                   "tts_available": self.worker.tts_available(), "voices": gtts.VOICES,
+                                  "voice_info": gtts.VOICE_INFO,
                                   "tts_voice": self.s.tts_voice})
 
     async def get(self, request):
@@ -495,6 +497,29 @@ class StoryApi:
         if not ok:
             raise ApiError(text)
         return web.json_response(self._json(self.db.story(st["id"])))
+
+    async def tts_preview(self, request):
+        """Короткий образец голоса (кэшируется: повторное прослушивание не тратит лимит Google)."""
+        from .web import ApiError
+
+        voice = request.query.get("voice", "")
+        lang = request.query.get("lang", "ru") if request.query.get("lang") in ("ru", "en") else "ru"
+        if voice not in gtts.VOICES:
+            raise ApiError("Неизвестный голос.")
+        if not self.worker.tts_available():
+            raise ApiError("Нет ключа GEMINI_API_KEY в .env (бесплатно: aistudio.google.com/apikey).")
+        d = self.s.data_dir / "tts_preview"
+        d.mkdir(parents=True, exist_ok=True)
+        path = d / f"{voice}_{lang}.wav"
+        if not path.exists():
+            tmp = path.with_suffix(".tmp.wav")
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, partial(
+                    gtts.synthesize, gtts.PREVIEW[lang], tmp, self.s.gemini_api_key, voice, lang))
+            except gtts.TTSError as e:
+                raise ApiError(str(e)) from None
+            tmp.replace(path)
+        return web.FileResponse(path, headers={"Content-Type": "audio/wav", "Cache-Control": "private, max-age=86400"})
 
     async def tts(self, request):
         from .web import ApiError

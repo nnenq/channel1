@@ -22,6 +22,7 @@ from ..smartcut.analyze import whisper_transcribe
 from ..smartcut.core import cached_transcriber
 from ..smartcut.media import probe
 from ..story import script as sc
+from ..story import tts as gtts
 from ..story.assemble import build_story
 from .db import iso, utcnow
 from .telegram import esc
@@ -180,17 +181,39 @@ class StoryWorker:
             return await self._fail(story, note or "сценариев нет")
         await self._deliver(story, scripts)
 
+    def tts_available(self):
+        return bool(self.s.gemini_api_key)
+
     async def _deliver(self, story, bodies):
         sid, uid = story["id"], story["user_id"]
         start = len(self.db.story_scripts(sid))
+        auto = bool(story["tts"]) and self.tts_available()
         for i, body in enumerate(bodies):
             scid = self.db.add_story_script(sid, start + i, body)
             await self.send_script(self.db.story_script(scid), uid)
-        self.db.update_story(sid, status="scripts", stage=f"сценариев: {len(bodies)} — жду голос", progress=1)
+            if auto:
+                self.request_tts(self.db.story_script(scid), story["tts_voice"])
+        self.db.update_story(sid, status="scripts", progress=1,
+                             stage=f"сценариев: {len(bodies)} — " + ("озвучиваю голосом Google" if auto else "жду голос"))
+        if auto:
+            await self.bot.tg.send(uid, "🤖 Озвучиваю сценарии голосом Google и собираю ролики — пришлю сюда.")
+
+    def request_tts(self, item, voice=None):
+        """Озвучить сценарий голосом Google вместо своего. -> (ok, текст)."""
+        if not self.tts_available():
+            return False, "Нет ключа GEMINI_API_KEY в .env (бесплатно: aistudio.google.com/apikey)"
+        if item["status"] in ("queued", "running"):
+            return False, "Этот ролик уже собирается"
+        voice = voice if voice in gtts.VOICES else self.s.tts_voice
+        self.db.update_story_script(item["id"], status="queued", voice_src="tts:" + voice, voice_path=None, error=None)
+        self.poke()
+        return True, "Озвучиваю и собираю ролик"
 
     async def send_script(self, item, uid):
         body = json.loads(item["body"])
-        msg = await self.bot.tg.send(uid, script_text(body)[:4000])
+        buttons = ([[{"text": "🤖 Озвучить голосом Google (бесплатно)", "callback_data": f"st_tts:{item['id']}"}]]
+                   if self.tts_available() else None)
+        msg = await self.bot.tg.send(uid, script_text(body)[:4000], buttons)
         if msg:
             self.db.update_story_script(item["id"], tg_chat=uid, tg_message_id=msg["message_id"])
         return msg
@@ -225,7 +248,7 @@ class StoryWorker:
         ext = Path(media.get("file_name") or "voice.ogg").suffix or ".ogg"
         dst = story_dir(self.s, story["id"]) / f"voice_{item['id']}{ext}"
         await self.bot.tg.download(media["file_id"], dst)
-        self.db.update_story_script(item["id"], status="queued", voice_path=str(dst), error=None)
+        self.db.update_story_script(item["id"], status="queued", voice_path=str(dst), voice_src="user", error=None)
         await self.bot.tg.send(chat, "🎙 Голос получил — собираю ролик, пришлю сюда.")
         self.poke()
         return True
@@ -238,9 +261,25 @@ class StoryWorker:
         self.db.update_story_script(item["id"], status="running")
         tr = partial(whisper_transcribe, model_size=self.s.whisper_model,
                      language=story["lang"] if story["lang"] in ("ru", "en") else None)
+        voice_path = item["voice_path"]
+        if (item["voice_src"] or "").startswith("tts") and not (voice_path and Path(voice_path).exists()):
+            voice = (item["voice_src"] or "tts:").split(":", 1)[1] or self.s.tts_voice
+            voice_path = str(d / f"voice_{item['id']}_google.wav")
+            text = " ".join(ln["text"] for ln in body["lines"])
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, partial(
+                    gtts.synthesize, text, voice_path, self.s.gemini_api_key, voice, story["lang"] or "ru"))
+            except Exception as e:  # noqa: BLE001
+                log.warning("озвучка %s: %s", item["id"], e)
+                self.db.update_story_script(item["id"], status="failed", error=f"озвучка Google: {e}"[:500])
+                await self.bot.tg.send(story["user_id"], f"❌ Не получилось озвучить «{esc(body['title'])}»: "
+                                                         f"{esc(str(e))[:400]}\nМожно ответить на сценарий "
+                                                         f"своим голосовым.")
+                return
+            self.db.update_story_script(item["id"], voice_path=voice_path)
         try:
             await asyncio.get_running_loop().run_in_executor(None, partial(
-                build_story, story["src_path"], item["voice_path"], body, out, tr, d / f"tmp_{item['id']}"))
+                build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}"))
         except Exception as e:  # noqa: BLE001
             log.exception("сборка %s", item["id"])
             self.db.update_story_script(item["id"], status="failed", error=f"{type(e).__name__}: {e}"[:500])
@@ -275,6 +314,7 @@ def setup(webapp, router):
     router.add_post("/api/stories/{sid}/run", api.run)
     router.add_post("/api/stories/{sid}/ai", api.decide)
     router.add_post("/api/stories/{sid}/scripts/{scid}/send", api.resend)
+    router.add_post("/api/stories/{sid}/scripts/{scid}/tts", api.tts)
     router.add_get("/api/stories/{sid}/prompt", api.prompt)
     router.add_post("/api/stories/{sid}/prompt/send", api.send_prompt)
     router.add_delete("/api/stories/{sid}", api.delete)
@@ -324,7 +364,9 @@ class StoryApi:
         uid = request["user"]["id"]
         return web.json_response({"stories": [self._json(s) for s in self.db.stories(uid)], "chunk": CHUNK,
                                   "max_mb": self.s.story_max_mb, "max_minutes": self.s.story_max_minutes,
-                                  "ai_available": self.w.bot.cut.ai_allowed(uid)})
+                                  "ai_available": self.w.bot.cut.ai_allowed(uid),
+                                  "tts_available": self.worker.tts_available(), "voices": gtts.VOICES,
+                                  "tts_voice": self.s.tts_voice})
 
     async def get(self, request):
         return web.json_response(self._json(self._story(request)))
@@ -404,6 +446,8 @@ class StoryApi:
             raise ApiError("Напиши текст ролика (хотя бы пару предложений).")
         if kind not in ("manual", "chat") and not self.w.bot.cut.ai_allowed(request["user"]["id"]):
             raise ApiError("AI-сценарии доступны владельцу бота. Выбери «Свой текст».")
+        voice = body.get("tts_voice") if body.get("tts_voice") in gtts.VOICES else None
+        self.db.update_story(st["id"], tts=int(bool(body.get("tts")) and self.worker.tts_available()), tts_voice=voice)
         self.db.update_story(st["id"], status="queued", stage="в очереди", progress=0, kind=kind, lang=lang,
                              count=count, seconds=seconds, topic=str(body.get("topic") or "")[:100] or None,
                              manual_text=text or None, ai_state=None, estimate=None, error=None)
@@ -448,6 +492,20 @@ class StoryApi:
 
         st = self._story(request)
         ok, text = self.worker.decide(st, bool((await request.json()).get("yes")))
+        if not ok:
+            raise ApiError(text)
+        return web.json_response(self._json(self.db.story(st["id"])))
+
+    async def tts(self, request):
+        from .web import ApiError
+
+        st = self._story(request)
+        item = self.db.story_script(int(request.match_info["scid"]))
+        if not item or item["story_id"] != st["id"]:
+            raise ApiError("Не найдено.", status=404)
+        if not st["src_path"] or not Path(st["src_path"]).exists():
+            raise ApiError("Файл мультфильма удалён — загрузи заново.")
+        ok, text = self.worker.request_tts(item, (await request.json()).get("voice"))
         if not ok:
             raise ApiError(text)
         return web.json_response(self._json(self.db.story(st["id"])))

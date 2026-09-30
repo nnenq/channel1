@@ -343,6 +343,17 @@ class BotApp:
                         pass
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
             return
+        if data.startswith("st_tts:"):
+            item = self.db.story_script(int(data.split(":")[1]))
+            story = self.db.story(item["story_id"]) if item else None
+            if not story or story["user_id"] != user.get("id"):
+                answer = "Нет доступа"
+            elif not story["src_path"] or not Path(story["src_path"]).exists():
+                answer = "Файл мультфильма удалён — загрузи заново"
+            else:
+                ok, answer = self.stories.request_tts(item, story["tts_voice"])
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
         if data.startswith(("st_yes:", "st_no:")):
             story = self.db.story(int(data.split(":")[1]))
             if not story or story["user_id"] != user.get("id"):

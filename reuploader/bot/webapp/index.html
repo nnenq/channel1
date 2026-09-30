@@ -678,7 +678,17 @@ const STORY_STATUS = { uploading: "загрузка", uploaded: "загруже�
 const SCRIPT_STATUS = { wait_voice: "🎙 жду голосовое", queued: "⏳ в очереди на сборку", running: "⏳ собираю ролик",
   done: "✅ ролик готов", failed: "❌ ошибка" };
 const STORY_KINDS = [["chat", "Чат Claude"], ["auto", "Бот решит"], ["recap", "Пересказ"], ["theory", "Теория"], ["manual", "Свой текст"]];
-let storyForm = { kind: "chat", chatKind: "auto", lang: "ru", count: 3, seconds: 60, topic: "", text: "", answer: "" };
+let storyForm = { kind: "chat", chatKind: "auto", lang: "ru", count: 3, seconds: 60, topic: "", text: "", answer: "",
+  tts: true, tts_voice: "" };
+function storyTtsBlock() {
+  const f = storyForm, m = storyMeta || {};
+  if (!m.tts_available) return `<div class="row sub">🤖 Бесплатная озвучка голосом Google: добавь в .env строку GEMINI_API_KEY=… (ключ бесплатный на aistudio.google.com/apikey) и перезапусти бота.</div>`;
+  const voice = f.tts_voice || m.tts_voice;
+  return `<div class="row"><div class="grow">🤖 Сразу озвучить голосом Google<div class="sub">бесплатно; иначе — отвечаешь голосовым сам</div></div>
+      <label class="switch"><input type="checkbox" ${f.tts ? "checked" : ""} onchange="storySet('tts', this.checked, true)"><span></span></label></div>
+    ${f.tts ? `<div class="row"><div class="grow">Голос</div><select onchange="storySet('tts_voice', this.value)">${(m.voices || []).map(v =>
+        `<option ${v === voice ? "selected" : ""}>${v}</option>`).join("")}</select></div>` : ""}`;
+}
 
 async function showStories(sid) {
   const d = await guarded(() => api("GET", "/api/stories"));
@@ -772,6 +782,7 @@ function renderStory(st) {
       <div class="row"><div class="grow">Сколько роликов</div><input class="num" type="number" min="1" max="5" value="${f.count}" oninput="storySet('count', +this.value)"></div>
       <div class="row"><div class="grow">Длина ролика, сек<div class="sub">30–150; для Shorts лучше 45–75</div></div><input class="num" type="number" min="30" max="150" value="${f.seconds}" oninput="storySet('seconds', +this.value)"></div>
       <div class="row"><input class="grow" placeholder="О ком/о чём (необязательно): например, Эльза" value="${esc(f.topic)}" oninput="storySet('topic', this.value)"></div>`}
+      ${storyTtsBlock()}
       ${f.kind === "chat" ? "" : `<div class="row"><button class="wide" onclick="storyRun(${st.id})">${f.kind === "manual" ? "Подобрать сцены под мой текст" : "✍️ Написать сценарии"}</button></div>`}`;
   }
   html += `</div>`;
@@ -783,6 +794,7 @@ function renderStory(st) {
       <div class="row" style="white-space:pre-wrap">${esc(x.text)}</div>
       ${x.error ? `<div class="row sub">❌ ${esc(x.error)}</div>` : ""}
       <div class="row" style="gap:8px;flex-wrap:wrap">
+        ${["wait_voice", "failed", "done"].includes(x.status) && storyMeta?.tts_available ? `<button onclick="storyTts(${st.id}, ${x.id})">🤖 Озвучить бесплатно</button>` : ""}
         ${["wait_voice", "failed", "done"].includes(x.status) ? `<button class="ghost" onclick="storyResend(${st.id}, ${x.id})">📨 Прислать в Telegram для озвучки</button>` : ""}
         ${x.link ? `<button onclick="openLink(location.origin + '${x.link}')">📥 Скачать ролик</button>` : ""}</div>
     </div>`).join("") + `<div class="hint">Озвучка: открой чат с ботом, найди сообщение со сценарием, нажми «Ответить» и запиши голосовое. Можно записать и в диктофоне и прислать файлом — тоже ответом на сценарий.</div>`;
@@ -841,7 +853,8 @@ async function storySendPrompt(sid) {
 async function storyRunAnswer(sid) {
   const text = (storyForm.answer || "").trim();
   if (text.length < 20) return alertMsg("Вставь ответ Claude.");
-  const d = await guarded(() => api("POST", `/api/stories/${sid}/run`, { kind: "manual", text }));
+  const d = await guarded(() => api("POST", `/api/stories/${sid}/run`,
+    { kind: "manual", text, lang: storyForm.lang, tts: storyForm.tts, tts_voice: storyForm.tts_voice || storyMeta?.tts_voice }));
   if (d) { haptic("success"); toast("Собираю сценарии — пришлю в Telegram для озвучки"); storyForm.answer = ""; renderStory(d); }
 }
 async function storyRun(sid, kindOverride) {
@@ -854,6 +867,11 @@ async function storyRun(sid, kindOverride) {
 async function storyAi(sid, yes) {
   const d = await guarded(() => api("POST", `/api/stories/${sid}/ai`, { yes }));
   if (d) renderStory(d);
+}
+async function storyTts(sid, scid) {
+  const d = await guarded(() => api("POST", `/api/stories/${sid}/scripts/${scid}/tts`,
+    { voice: storyForm.tts_voice || storyMeta?.tts_voice }));
+  if (d) { haptic("success"); toast("Озвучиваю голосом Google — ролик придёт в Telegram"); renderStory(d); }
 }
 async function storyResend(sid, scid) {
   if (await guarded(() => api("POST", `/api/stories/${sid}/scripts/${scid}/send`))) {

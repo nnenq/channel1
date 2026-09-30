@@ -286,3 +286,77 @@ def test_chat_mode_needs_no_api(bot_env, media):
     assert e.db.story(sid)["status"] == "scripts"
     body = json.loads(e.db.story_scripts(sid)[0]["body"])
     assert body["title"] == "Тест" and body["lines"][1]["from"] == 5
+
+
+# ---------- бесплатная озвучка Google (Gemini TTS) ----------
+
+def _wav_bytes(seconds=1.0, rate=24000):
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(b"\x01\x00" * int(rate * seconds))
+    return buf.getvalue()
+
+
+def test_tts_chunks_joins_and_retries(tmp_path):
+    import urllib.error
+    from reuploader.story import tts
+    text = ("Первое предложение истории. " * 60).strip()
+    parts = tts.chunks(text, limit=300)
+    assert len(parts) > 1 and all(len(p) <= 300 for p in parts)
+    calls, sleeps = [], []
+
+    def fake(part, voice, style, model, key):
+        calls.append((part, voice, style, key))
+        if len(calls) == 1:
+            raise urllib.error.HTTPError("u", 429, "limit", {}, None)
+        return _wav_bytes(0.5)
+    out = tts.synthesize(text, tmp_path / "v.wav", "KEY", voice="Kore", request=fake, sleep=sleeps.append)
+    import wave
+    with wave.open(str(out)) as w:
+        n = len(tts.chunks(text))                            # synthesize режет по MAX_CHARS
+        assert n > 1 and w.getframerate() == 24000 and w.getnframes() >= 24000 * 0.75 * n
+    assert sleeps == [20] and calls[-1][1] == "Kore" and "рассказчик" in calls[-1][2]
+    with pytest.raises(tts.TTSError):
+        tts.synthesize("текст", tmp_path / "x.wav", "")
+    raw_pcm = tts.synthesize("Hello there.", tmp_path / "p.wav", "K", lang="en",
+                             request=lambda *a: b"\x00\x00" * 2400)          # «голый» PCM тоже понимаем
+    assert raw_pcm.exists()
+
+
+def test_google_voice_instead_of_own(bot_env, media, monkeypatch):
+    e = bot_env
+    from reuploader.bot import stories
+    e.s.gemini_api_key = "KEY"
+    spoken = []
+
+    def fake_synth(text, path, key, voice, lang):
+        spoken.append((text, voice, key))
+        shutil.copy(media[0] / "voice.ogg", path)        # «голос Google»
+        return path
+    monkeypatch.setattr(stories.gtts, "synthesize", fake_synth)
+    sid = e.new_story(text=" ".join(w.text for w in e.voice_words))
+    asyncio.run(e.w.run(e.db.story(sid)))
+    item = e.db.story_scripts(sid)[0]
+    assert e.tg.sent[-1][1][0][0]["callback_data"] == f"st_tts:{item['id']}"   # кнопка под сценарием
+    ok, _ = e.w.request_tts(item, "Kore")
+    assert ok and e.db.story_script(item["id"])["status"] == "queued"
+    asyncio.run(e.w.render(e.db.next_story_script()))
+    done = e.db.story_script(item["id"])
+    assert done["status"] == "done" and spoken[0][1] == "Kore" and spoken[0][2] == "KEY"
+    assert probe(done["out_path"]).height == 1920
+
+
+def test_auto_tts_after_scripts(bot_env, monkeypatch):
+    e = bot_env
+    e.s.gemini_api_key = "KEY"
+    sid = e.new_story(text="Смотри что сейчас будет. Это важно запомнить.")
+    e.db.update_story(sid, tts=1, tts_voice="Charon")
+    asyncio.run(e.w.run(e.db.story(sid)))
+    item = e.db.story_scripts(sid)[0]
+    assert item["status"] == "queued" and item["voice_src"] == "tts:Charon"
+    e.s.gemini_api_key = ""
+    ok, text = e.w.request_tts(item)
+    assert not ok and "GEMINI_API_KEY" in text

@@ -218,6 +218,9 @@ MIGRATIONS = [
     ("uploads", "live_at", "TEXT"),
     ("uploads", "checked_at", "TEXT"),
     ("projects", "topic", "TEXT NOT NULL DEFAULT ''"),
+    ("story_scripts", "voice_src", "TEXT"),          # user | tts
+    ("stories", "tts", "INTEGER NOT NULL DEFAULT 0"),  # сразу озвучивать голосом Google
+    ("stories", "tts_voice", "TEXT"),
 ]
 
 PROJECT_FIELDS = {

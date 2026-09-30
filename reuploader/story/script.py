@@ -201,3 +201,68 @@ def manual_script(text, lines, duration, title="", lang="ru"):
         out.append({"text": sent, "from": round(a, 2), "to": round(min(b, duration or b), 2)})
     first = sentences[0]
     return {"title": title or first[:90], "kind": "recap", "overlay": "", "why": "свой текст", "lines": out}
+
+
+# ---------- без API: задание для обычного чата Claude (claude.ai) и разбор ответа ----------
+
+CHAT_FORMAT = """Формат ответа — строго такой, без пояснений до и после:
+
+### Название ролика
+Надпись: короткая надпись сверху кадра
+[12.5-16.0] Первая фраза сценария.
+[20.1-24.8] Вторая фраза сценария.
+
+### Название следующего ролика
+…
+
+В квадратных скобках — отрезок мультфильма в секундах (из расшифровки), который показывает то, о чём фраза."""
+
+
+def chat_prompt(lines, kind, lang, count, seconds, duration, topic=""):
+    """Текст, который пользователь вставит в чат Claude вместо платного API-запроса."""
+    return SYSTEM + "\n\n" + CHAT_FORMAT + "\n\n" + user_prompt(lines, kind, lang, count, seconds, duration, topic)
+
+
+_TIMED = re.compile(r"^\s*[\[(]?\s*(\d+(?:[.,]\d+)?)\s*(?:с|s)?\s*[–—-]\s*(\d+(?:[.,]\d+)?)\s*(?:с|s)?\s*[\])]?\s*[:|.—-]?\s*(.+)$")
+_OVERLAY = re.compile(r"^\s*(надпись|overlay)\s*:\s*(.+)$", re.I)
+
+
+def parse_chat_answer(text, lines, duration):
+    """Ответ из чата (или свой текст) -> список сценариев.
+
+    Понимает «### Название», «Надпись: …» и строки «[12.5-16] фраза». Строки без таймкодов
+    привязываются к сценам по совпадению слов (как manual_script)."""
+    blocks, cur = [], None
+    for raw in (text or "").splitlines():
+        s = raw.strip().strip("*").strip()
+        if not s:
+            continue
+        if s.startswith("#"):
+            cur = {"title": s.lstrip("#").strip().strip("*_").strip()[:100], "overlay": "", "items": []}
+            blocks.append(cur)
+            continue
+        if cur is None:
+            cur = {"title": "", "overlay": "", "items": []}
+            blocks.append(cur)
+        m = _OVERLAY.match(s)
+        if m:
+            cur["overlay"] = m.group(2).strip()[:60]
+            continue
+        cur["items"].append(s)
+    out = []
+    for b in blocks:
+        if not b["items"]:
+            continue
+        timed = [_TIMED.match(x) for x in b["items"]]
+        if all(timed):
+            body = {"title": b["title"] or timed[0].group(3)[:90], "kind": "recap", "overlay": b["overlay"],
+                    "why": "свой текст", "lines": [{"text": m.group(3).strip(), "from": float(m.group(1).replace(",", ".")),
+                                                    "to": float(m.group(2).replace(",", "."))} for m in timed]}
+            out += clean_scripts([body], duration)
+        else:
+            body = manual_script(" ".join(_TIMED.sub(r"\3", x) for x in b["items"]), lines, duration, b["title"])
+            body["overlay"] = b["overlay"]
+            out.append(body)
+    if not out:
+        raise ValueError("Не нашёл текст сценария.")
+    return out

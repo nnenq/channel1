@@ -673,11 +673,12 @@ function publishPrompt(url, vid) {
 // ---------- пересказы и теории ----------
 let storyPoll = null, storyMeta = null;
 const STORY_STATUS = { uploading: "загрузка", uploaded: "загружено — выбери, что делать", queued: "в очереди",
-  running: "работаю", confirm: "жду подтверждения цены", scripts: "сценарии готовы — жду твой голос", failed: "ошибка" };
+  running: "работаю", confirm: "жду подтверждения цены", scripts: "сценарии готовы — жду твой голос", failed: "ошибка",
+  chat: "расшифровка готова — задание для чата Claude" };
 const SCRIPT_STATUS = { wait_voice: "🎙 жду голосовое", queued: "⏳ в очереди на сборку", running: "⏳ собираю ролик",
   done: "✅ ролик готов", failed: "❌ ошибка" };
-const STORY_KINDS = [["auto", "Бот решит"], ["recap", "Пересказ"], ["theory", "Теория"], ["manual", "Свой текст"]];
-let storyForm = { kind: "auto", lang: "ru", count: 3, seconds: 60, topic: "", text: "" };
+const STORY_KINDS = [["chat", "Чат Claude"], ["auto", "Бот решит"], ["recap", "Пересказ"], ["theory", "Теория"], ["manual", "Свой текст"]];
+let storyForm = { kind: "chat", chatKind: "auto", lang: "ru", count: 3, seconds: 60, topic: "", text: "", answer: "" };
 
 async function showStories(sid) {
   const d = await guarded(() => api("GET", "/api/stories"));
@@ -754,23 +755,24 @@ function renderStory(st) {
       <div class="row" style="padding:0;gap:8px"><button onclick="storyAi(${st.id}, true)">✅ Да</button>
       <button class="ghost" onclick="storyAi(${st.id}, false)">Нет</button></div></div>`;
   }
-  if (["uploaded", "scripts", "failed"].includes(st.status)) {
-    html += `<div class="row"><div class="seg">${STORY_KINDS.filter(([k]) => ai || k === "manual").map(([k, v]) =>
+  if (["uploaded", "scripts", "failed", "chat"].includes(st.status)) {
+    html += `<div class="row"><div class="seg" style="flex-wrap:wrap">${STORY_KINDS.filter(([k]) => ai || ["manual", "chat"].includes(k)).map(([k, v]) =>
         `<button class="${f.kind === k ? "on" : ""}" onclick="storySet('kind','${k}',true)">${v}</button>`).join("")}</div></div>
       <div class="hint" style="padding:0 16px 6px">${{
         auto: "Бот сам решит для каждого ролика, что зайдёт лучше: пересказ сюжета или теория.",
         recap: "Сюжет серии/части фильма за минуту: крючок в начале, главные события, поворот, финал.",
         theory: "Необычный взгляд на героя или сюжет с «доказательствами» из сцен мультфильма и вопросом зрителям в конце.",
         manual: "Пишешь текст сам — бот подберёт сцены под каждую фразу (бесплатно, без AI).",
+        chat: "Без API и без оплаты: бот распознает речь и подготовит задание — ты вставляешь его в обычный чат Claude (claude.ai по подписке), а ответ — сюда.",
       }[f.kind]}</div>
-      ${f.kind === "manual" ? `<div class="row"><textarea id="storyText" class="grow" rows="7" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--sep);background:var(--bg);color:var(--text)"
+      ${f.kind === "chat" ? storyChatBlock(st) : f.kind === "manual" ? `<div class="row"><textarea id="storyText" class="grow" rows="7" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--sep);background:var(--bg);color:var(--text)"
           placeholder="Текст ролика: каждое предложение — отдельная сцена" oninput="storySet('text', this.value)">${esc(f.text)}</textarea></div>` : `
       <div class="row"><div class="grow">Язык озвучки</div><div class="seg">${[["ru", "Русский"], ["en", "English"]].map(([k, v]) =>
         `<button class="${f.lang === k ? "on" : ""}" onclick="storySet('lang','${k}',true)">${v}</button>`).join("")}</div></div>
       <div class="row"><div class="grow">Сколько роликов</div><input class="num" type="number" min="1" max="5" value="${f.count}" oninput="storySet('count', +this.value)"></div>
       <div class="row"><div class="grow">Длина ролика, сек<div class="sub">30–150; для Shorts лучше 45–75</div></div><input class="num" type="number" min="30" max="150" value="${f.seconds}" oninput="storySet('seconds', +this.value)"></div>
       <div class="row"><input class="grow" placeholder="О ком/о чём (необязательно): например, Эльза" value="${esc(f.topic)}" oninput="storySet('topic', this.value)"></div>`}
-      <div class="row"><button class="wide" onclick="storyRun(${st.id})">${f.kind === "manual" ? "Подобрать сцены под мой текст" : "✍️ Написать сценарии"}</button></div>`;
+      ${f.kind === "chat" ? "" : `<div class="row"><button class="wide" onclick="storyRun(${st.id})">${f.kind === "manual" ? "Подобрать сцены под мой текст" : "✍️ Написать сценарии"}</button></div>`}`;
   }
   html += `</div>`;
   if (st.scripts.length) {
@@ -794,11 +796,60 @@ function renderStory(st) {
     if (cur) renderStory(cur);
   }, 4000);
 }
-async function storyRun(sid) {
+function storyChatBlock(st) {
   const f = storyForm;
+  const opts = `
+      <div class="row"><div class="grow">Что писать</div><div class="seg">${[["auto", "Бот решит"], ["recap", "Пересказ"], ["theory", "Теория"]].map(([k, v]) =>
+        `<button class="${f.chatKind === k ? "on" : ""}" onclick="storySet('chatKind','${k}',true)">${v}</button>`).join("")}</div></div>
+      <div class="row"><div class="grow">Язык озвучки</div><div class="seg">${[["ru", "Русский"], ["en", "English"]].map(([k, v]) =>
+        `<button class="${f.lang === k ? "on" : ""}" onclick="storySet('lang','${k}',true)">${v}</button>`).join("")}</div></div>
+      <div class="row"><div class="grow">Сколько роликов</div><input class="num" type="number" min="1" max="5" value="${f.count}" oninput="storySet('count', +this.value)"></div>
+      <div class="row"><div class="grow">Длина ролика, сек</div><input class="num" type="number" min="30" max="150" value="${f.seconds}" oninput="storySet('seconds', +this.value)"></div>
+      <div class="row"><input class="grow" placeholder="О ком/о чём (необязательно)" value="${esc(f.topic)}" oninput="storySet('topic', this.value)"></div>`;
+  if (!st.has_transcript)
+    return opts + `<div class="row"><button class="wide" onclick="storyRun(${st.id}, 'chat')">📝 Распознать речь и подготовить задание</button></div>`;
+  return opts + `
+      <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div><b>1.</b> Возьми задание для Claude:</div>
+        <div class="row" style="padding:0;gap:8px;flex-wrap:wrap">
+          <button onclick="storyCopyPrompt(${st.id})">📋 Скопировать задание</button>
+          <button class="ghost" onclick="storySendPrompt(${st.id})">📨 Прислать файлом в Telegram</button></div>
+        <div><b>2.</b> Открой <a href="#" onclick="openLink('https://claude.ai/new');return false">claude.ai</a>, вставь задание (или приложи файл) и отправь.</div>
+        <div><b>3.</b> Весь ответ Claude вставь сюда:</div>
+        <textarea id="storyAnswer" rows="8" style="font:inherit;padding:8px;border-radius:8px;border:1px solid var(--sep);background:var(--bg);color:var(--text)"
+          placeholder="### Название ролика&#10;Надпись: …&#10;[12.5-16.0] Первая фраза…" oninput="storySet('answer', this.value)">${esc(f.answer)}</textarea>
+        <button class="wide" onclick="storyRunAnswer(${st.id})">🎬 Собрать сценарии из ответа</button></div>`;
+}
+function storyQuery() {
+  const f = storyForm;
+  return { kind: f.chatKind, lang: f.lang, count: f.count, seconds: f.seconds, topic: f.topic };
+}
+async function storyCopyPrompt(sid) {
+  const d = await guarded(() => api("GET", `/api/stories/${sid}/prompt?` + new URLSearchParams(storyQuery())));
+  if (!d) return;
+  try { await navigator.clipboard.writeText(d.prompt); toast("Задание скопировано — вставь в чат Claude"); }
+  catch (e) {                                   // в некоторых WebView буфер недоступен — покажем текст
+    alertMsg("Не получилось скопировать автоматически — пришлю файлом в Telegram.");
+    storySendPrompt(sid);
+  }
+}
+async function storySendPrompt(sid) {
+  if (await guarded(() => api("POST", `/api/stories/${sid}/prompt/send`, storyQuery()))) {
+    haptic("success"); toast("Отправил файл в чат с ботом");
+  }
+}
+async function storyRunAnswer(sid) {
+  const text = (storyForm.answer || "").trim();
+  if (text.length < 20) return alertMsg("Вставь ответ Claude.");
+  const d = await guarded(() => api("POST", `/api/stories/${sid}/run`, { kind: "manual", text }));
+  if (d) { haptic("success"); toast("Собираю сценарии — пришлю в Telegram для озвучки"); storyForm.answer = ""; renderStory(d); }
+}
+async function storyRun(sid, kindOverride) {
+  const f = { ...storyForm, kind: kindOverride || storyForm.kind };
   if (f.kind === "manual" && (f.text || "").trim().length < 20) return alertMsg("Напиши текст ролика.");
   const d = await guarded(() => api("POST", `/api/stories/${sid}/run`, f));
-  if (d) { haptic("success"); toast(f.kind === "manual" ? "Подбираю сцены — сценарий придёт в Telegram" : "Распознаю речь и считаю цену — спрошу в Telegram"); renderStory(d); }
+  if (d) { haptic("success"); toast({ manual: "Подбираю сцены — сценарий придёт в Telegram",
+    chat: "Распознаю речь — напишу, когда задание будет готово" }[f.kind] || "Распознаю речь и считаю цену — спрошу в Telegram"); renderStory(d); }
 }
 async function storyAi(sid, yes) {
   const d = await guarded(() => api("POST", `/api/stories/${sid}/ai`, { yes }));

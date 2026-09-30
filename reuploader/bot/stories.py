@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aiohttp import web
 
+from ..smartcut.analyze import Word as sc_word
 from ..smartcut.analyze import whisper_transcribe
 from ..smartcut.core import cached_transcriber
 from ..smartcut.media import probe
@@ -29,7 +30,7 @@ log = logging.getLogger("stories")
 CHUNK = 8 * 1024 * 1024
 TG_SEND_MAX_MB = 49
 SAFE_NAME = re.compile(r"[^\w.\- ()\[\]а-яА-ЯёЁ]+")
-KINDS = ("recap", "theory", "auto", "manual")
+KINDS = ("recap", "theory", "auto", "manual", "chat")
 VOICE_HINT = ("🎙 <b>Ответь на это сообщение голосовым</b> — прочитай текст выше своим голосом "
               "(можно своими словами, главное — по порядку). Я соберу ролик: кадры мультфильма под каждую "
               "фразу, твой голос и субтитры.")
@@ -106,12 +107,19 @@ class StoryWorker:
         lines = sc.lines_from_words(words)
         duration = story["duration"] or probe(story["src_path"]).duration
 
-        if story["kind"] == "manual":
+        if story["kind"] == "manual":        # свой текст или ответ из чата Claude
             try:
-                body = sc.manual_script(story["manual_text"] or "", lines, duration)
+                bodies = sc.parse_chat_answer(story["manual_text"] or "", lines, duration)
             except ValueError as e:
                 return await self._fail(story, str(e))
-            return await self._deliver(story, [body])
+            return await self._deliver(story, bodies)
+        if story["kind"] == "chat":          # без API: готовим задание для чата Claude
+            self.db.update_story(sid, status="chat", progress=1,
+                                 stage="расшифровка готова — скопируй задание в чат Claude")
+            await self.bot.tg.send(uid, f"📝 Расшифровка «{esc(story['filename'])}» готова. Открой панель → "
+                                        f"«Пересказы и теории» → скопируй задание в чат Claude, а его ответ "
+                                        f"вставь обратно.")
+            return
 
         if not lines:
             return await self._fail(story, "в мультфильме не нашлось речи — AI не из чего писать сценарий. "
@@ -267,6 +275,8 @@ def setup(webapp, router):
     router.add_post("/api/stories/{sid}/run", api.run)
     router.add_post("/api/stories/{sid}/ai", api.decide)
     router.add_post("/api/stories/{sid}/scripts/{scid}/send", api.resend)
+    router.add_get("/api/stories/{sid}/prompt", api.prompt)
+    router.add_post("/api/stories/{sid}/prompt/send", api.send_prompt)
     router.add_delete("/api/stories/{sid}", api.delete)
     router.add_get("/sdl/{token}", api.download)
     return api
@@ -307,6 +317,7 @@ class StoryApi:
         return {k: st[k] for k in ("id", "status", "stage", "progress", "filename", "size", "duration", "kind",
                                    "lang", "count", "seconds", "topic", "error", "ai_state")} | {
             "uploaded": uploaded, "scripts": scripts,
+            "has_transcript": (story_dir(self.s, st["id"]) / "words.json").exists(),
             "estimate": json.loads(st["estimate"]) if st["estimate"] else None}
 
     async def list(self, request):
@@ -388,16 +399,49 @@ class StoryApi:
             seconds = max(30, min(150, int(body.get("seconds", 60))))
         except (TypeError, ValueError):
             raise ApiError("Число роликов и длина — числами.") from None
-        text = str(body.get("text") or "").strip()[:6000]
+        text = str(body.get("text") or "").strip()[:30000]
         if kind == "manual" and len(text) < 20:
             raise ApiError("Напиши текст ролика (хотя бы пару предложений).")
-        if kind != "manual" and not self.w.bot.cut.ai_allowed(request["user"]["id"]):
+        if kind not in ("manual", "chat") and not self.w.bot.cut.ai_allowed(request["user"]["id"]):
             raise ApiError("AI-сценарии доступны владельцу бота. Выбери «Свой текст».")
         self.db.update_story(st["id"], status="queued", stage="в очереди", progress=0, kind=kind, lang=lang,
                              count=count, seconds=seconds, topic=str(body.get("topic") or "")[:100] or None,
                              manual_text=text or None, ai_state=None, estimate=None, error=None)
         self.worker.poke()
         return web.json_response(self._json(self.db.story(st["id"])))
+
+    def _chat_prompt(self, st, q):
+        from .web import ApiError
+
+        words_path = story_dir(self.s, st["id"]) / "words.json"
+        if not words_path.exists():
+            raise ApiError("Сначала дождись расшифровки (режим «Через чат Claude»).")
+        words = [sc_word(**w) for w in json.loads(words_path.read_text(encoding="utf-8"))]
+        lines = sc.lines_from_words(words)
+        kind = q.get("kind") if q.get("kind") in ("recap", "theory", "auto") else "auto"
+        lang = q.get("lang") if q.get("lang") in ("ru", "en") else "ru"
+        try:
+            count = max(1, min(5, int(q.get("count", 3))))
+            seconds = max(30, min(150, int(q.get("seconds", 60))))
+        except ValueError:
+            count, seconds = 3, 60
+        return sc.chat_prompt(lines, kind, lang, count, seconds, st["duration"] or 0, (q.get("topic") or "")[:100])
+
+    async def prompt(self, request):
+        st = self._story(request)
+        return web.json_response({"prompt": self._chat_prompt(st, request.query)})
+
+    async def send_prompt(self, request):
+        """Задание файлом в Telegram — удобно переслать в чат Claude с телефона."""
+        st = self._story(request)
+        text = self._chat_prompt(st, await request.json())
+        path = story_dir(self.s, st["id"]) / "zadanie_dlya_claude.txt"
+        path.write_text(text, encoding="utf-8")
+        await self.w.bot.tg.send_document(request["user"]["id"], str(path),
+                                          "📝 Задание для Claude: открой claude.ai, приложи этот файл и напиши "
+                                          "«выполни задание из файла». Ответ вставь в панели.",
+                                          filename="zadanie_dlya_claude.txt", content_type="text/plain")
+        return web.json_response({"ok": True})
 
     async def decide(self, request):
         from .web import ApiError

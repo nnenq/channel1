@@ -247,3 +247,42 @@ def test_api_upload_and_run(bot_env, tmp_path, media):
     assert short == 400
     assert ran["status"] == "queued" and ran["count"] == 5 and ran["seconds"] == 30
     assert other == 404                                         # чужой мультфильм не виден
+
+
+# ---------- без API: задание для чата Claude ----------
+
+def test_parse_chat_answer_timed_and_plain():
+    lines = [(0, 3, "Эльза строит ледяной замок."), (10, 13, "Анна ищет сестру в горах.")]
+    answer = """Вот сценарии:
+### Эльза не злодейка
+Надпись: А ЕСЛИ ОНА ЗНАЛА?
+[0-3] Все думают, что Эльза сбежала.
+[10.5–13] Но Анна идёт за ней в горы.
+
+### **Холодное сердце за минуту**
+Анна ищет сестру в горах. Эльза строит ледяной замок!"""
+    got = sc.parse_chat_answer(answer, lines, 60)
+    assert [g["title"] for g in got][1:] == ["Эльза не злодейка", "Холодное сердце за минуту"]
+    assert got[0]["lines"][0]["text"] == "Вот сценарии:"                     # вводная строка — отдельно, не ломает
+    t = got[1]
+    assert t["overlay"] == "А ЕСЛИ ОНА ЗНАЛА?" and [l["from"] for l in t["lines"]] == [0, 10.5]
+    assert [round(l["from"]) for l in got[2]["lines"]] == [10, 0]            # без таймкодов — по словам
+    with pytest.raises(ValueError):
+        sc.parse_chat_answer("   \n\n", lines, 60)
+
+
+def test_chat_mode_needs_no_api(bot_env, media):
+    e = bot_env
+    e.allowed["ai"] = False                                     # AI недоступен — чат-режим всё равно работает
+    sid = e.new_story(kind="chat")
+    asyncio.run(e.w.run(e.db.story(sid)))
+    st = e.db.story(sid)
+    assert st["status"] == "chat" and "задание" in e.tg.sent[-1][0]
+    from reuploader.bot import stories
+    assert (stories.story_dir(e.s, sid) / "words.json").exists()
+    answer = "### Тест\n[1-4] Смотри что сейчас будет.\n[5-9] Это важно запомнить."
+    e.db.update_story(sid, status="queued", kind="manual", manual_text=answer)
+    asyncio.run(e.w.run(e.db.story(sid)))
+    assert e.db.story(sid)["status"] == "scripts"
+    body = json.loads(e.db.story_scripts(sid)[0]["body"])
+    assert body["title"] == "Тест" and body["lines"][1]["from"] == 5

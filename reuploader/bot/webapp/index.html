@@ -1070,9 +1070,12 @@ function renderJob(j) {
       ${cutMeta?.ai_available ? `<div class="row"><label style="display:flex;gap:8px;align-items:center">
         <input type="checkbox" id="tmAi"> 🤖 AI-анализ Claude (платно — сначала покажу цену)</label></div>` : ""}
       <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>
-      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id}, 'strip')">🔤 Субтитры: блюр-полоска</button></div>
-      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id}, 'crop')">🔤 Субтитры: обрезать полосу</button></div>
-      <div class="hint" style="padding:0 16px 8px"><b>Блюр-полоска</b> — закрою старые субтитры размытой полосой
+      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id}, 'erase')">🔤 Стереть субтитры и вставить наши</button></div>
+      <div class="row" style="gap:8px"><button class="ghost grow" onclick="runSubs(${j.id}, 'strip')">Блюр-полоска</button>
+        <button class="ghost grow" onclick="runSubs(${j.id}, 'crop')">Обрезать полосу</button></div>
+      <div class="hint" style="padding:0 16px 8px"><b>Стереть</b> — сотру буквы старых субтитров, картинку под ними
+        дорисую и поставлю наши анимированные на то же место (кадр не меняется).
+        <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой
         от края до края и поставлю наши анимированные поверх неё, остальной кадр не трогаю.
         <b>Обрезать полосу</b> — вырежу полосу со старым текстом и соберу вертикальное 1080×1920 на размытом фоне.</div>`;
   }

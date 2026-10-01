@@ -130,11 +130,12 @@ class CutApi:
         body = await request.json()
         mode = body.get("mode")
         tolerance = 0.05
-        if mode == "subs":       # замена вшитых субтитров — длина не нужна; method: strip | crop
-            crop = body.get("method") == "crop"
+        if mode == "subs":       # замена вшитых субтитров — длина не нужна; method: erase | strip | crop
+            method = body.get("method") if body.get("method") in ("strip", "crop") else "erase"
             self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
-                                   target_info="субтитры: " + ("обрезка" if crop else "полоска"), error=None,
-                                   report=None, mode="subs_crop" if crop else "subs",
+                                   target_info="субтитры: " + {"erase": "стереть", "strip": "полоска",
+                                                               "crop": "обрезка"}[method], error=None,
+                                   report=None, mode="subs" if method == "erase" else "subs_" + method,
                                    ai_state=None, estimate=None)
             self.w.bot.cut.poke()
             return web.json_response(self._json(self.db.cut_job(job["id"])))

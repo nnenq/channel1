@@ -4,9 +4,12 @@ analyze()  — по кадрам (2 в секунду, уменьшенным) �
              размытых полей) и в каких строках постоянно появляется текст с обводкой (субтитры,
              надписи-заголовки). Без OCR: текст = светлые (белые/жёлтые) штрихи с тёмной обводкой,
              много чередований по горизонтали, и стоит в одном месте у многих кадров.
-Два способа (method):
+Три способа (method):
+  erase — «стереть»: буквы старых субтитров (светлые с тёмной обводкой) стираются в каждом кадре,
+          картинка под ними дорисовывается по соседним пикселям (inpainting, OpenCV); наши субтитры
+          встают на то же место; размер кадра не меняется (по умолчанию);
   strip — «полоска»: старые субтитры закрываются размытой полосой на всю ширину кадра, наши
-          субтитры — по центру этой полосы; остальной кадр и размер видео не меняются (по умолчанию);
+          субтитры — по центру этой полосы; остальной кадр и размер видео не меняются;
   crop  — «обрезка»: полоса с текстом вырезается (plan), кадр собирается в вертикальное 1080×1920
           на размытом фоне, наши субтитры — как обычно.
 """
@@ -24,7 +27,7 @@ SCAN_W = 360
 SCAN_FPS = 2
 TEXT_FREQ = 0.2          # строка «с текстом», если текст в ней в ≥20 % кадров
 MIN_KEEP = 0.6           # обрезаем, если остаётся ≥60 % картинки; иначе размываем полосы
-METHODS = ("strip", "crop")
+METHODS = ("erase", "strip", "crop")
 
 
 @dataclass
@@ -208,6 +211,93 @@ def strip_filter(lay, strips, subs_name=None):
     return chain + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
 
 
+def letters_mask(band, width):
+    """Маска букв в полосе кадра (BGR): светлые пятна, почти целиком обведённые тёмным,
+    вместе с обводкой и тенью. -> uint8 0/1."""
+    import cv2
+
+    im = band.astype(np.int16)
+    b, g, r = im[..., 0], im[..., 1], im[..., 2]
+    bright = ((r > 185) & (g > 165)).astype(np.uint8)        # белые и жёлтые буквы
+    dark = (im.max(2) < 90).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(bright, 8, cv2.CV_32S)
+    if n <= 1:
+        return np.zeros_like(bright)
+    # кольцо вокруг каждого пятна: соседние пиксели получают номер пятна (максимум по соседям)
+    grown = cv2.dilate(lab.astype(np.float32), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))).astype(np.int32)
+    ring = (bright == 0) & (grown > 0)
+    total = np.bincount(grown[ring], minlength=n)
+    darkn = np.bincount(grown[ring & (dark == 1)], minlength=n)
+    area, h, w = st[:, cv2.CC_STAT_AREA], st[:, cv2.CC_STAT_HEIGHT], st[:, cv2.CC_STAT_WIDTH]
+    good = (area >= 15) & (h <= 0.9 * band.shape[0]) & (w <= 0.25 * width) & (total > 0) \
+        & (darkn >= 0.55 * np.maximum(total, 1))
+    good[0] = False
+    letters = good[lab].astype(np.uint8)
+    rad = max(4, round(width * 0.011))
+    return cv2.dilate(letters, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1, 2 * rad + 1)))
+
+
+def erase(band, mask):
+    """Дорисовывает картинку под маской. Считаем в половинном размере (в 10 раз быстрее, на вид
+    так же) и вклеиваем только стёртые пиксели — остальной кадр не трогаем."""
+    import cv2
+
+    h, w = band.shape[:2]
+    small = cv2.resize(band, (w // 2, h // 2), interpolation=cv2.INTER_AREA)
+    ms = cv2.dilate(cv2.resize(mask, (w // 2, h // 2), interpolation=cv2.INTER_NEAREST), np.ones((3, 3), np.uint8))
+    fill = cv2.resize(cv2.inpaint(small, ms * 255, 3, cv2.INPAINT_TELEA), (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.where(mask[..., None] > 0, fill, band)
+
+
+def erase_render(src, out, lay, bands, subs=None, progress=None):
+    """Стирает буквы в полосах bands в каждом кадре и кодирует видео с исходным звуком."""
+    try:
+        import cv2
+    except ImportError:
+        raise RuntimeError("для способа «стереть» нужен OpenCV: pip install opencv-python-headless") from None
+    info = probe(src)
+    w, h = lay.width, lay.height
+    frame_size = w * h * 3
+    total = max(1, int(info.duration * info.fps))
+    src, out = str(Path(src).resolve()), Path(out).resolve()
+    cwd = subs_name = None
+    if subs:
+        subs = Path(subs).resolve()
+        cwd, subs_name = subs.parent, subs.name
+    vf = (f"ass={subs_name}," if subs_name else "") + f"crop={w // 2 * 2}:{h // 2 * 2}:0:0,format=yuv420p"
+    dec = subprocess.Popen([ffmpeg_exe(), "-v", "error", "-i", src, "-an", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                            "-vsync", "passthrough", "-"], stdout=subprocess.PIPE)
+    enc = subprocess.Popen([ffmpeg_exe(), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
+                            "-s", f"{w}x{h}", "-r", f"{info.fps:.3f}", "-i", "-", "-i", src,
+                            "-map", "0:v", "-map", "1:a?", "-vf", vf, "-c:v", "libx264", "-preset", "medium",
+                            "-crf", "21", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart",
+                            "-map_metadata", "-1", str(out)], stdin=subprocess.PIPE, cwd=cwd)
+    done = 0
+    try:
+        while True:
+            buf = dec.stdout.read(frame_size)
+            if len(buf) < frame_size:
+                break
+            frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3).copy()
+            for a, b in bands:
+                band = frame[a:b]
+                mask = letters_mask(band, w)
+                if mask.any():
+                    frame[a:b] = erase(band, mask)
+            enc.stdin.write(frame.tobytes())
+            done += 1
+            if progress and done % 15 == 0:
+                progress(min(1.0, done / total))
+    finally:
+        enc.stdin.close()
+        dec.stdout.close()
+        dec.wait()
+        enc.wait()
+    if enc.returncode != 0 or not out.exists():
+        raise RuntimeError("ffmpeg не смог собрать видео")
+    return out
+
+
 def render(src, out, lay, subs=None, progress=None, strips=None):
     """strips=None — способ «обрезка» (вертикальное 1080×1920); список полос — способ «полоска»."""
     from . import ffprog
@@ -226,7 +316,7 @@ def render(src, out, lay, subs=None, progress=None, strips=None):
     return out
 
 
-def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="strip"):
+def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="erase"):
     """Всё вместе. progress(этап, доля). -> dict для отчёта."""
     from .subtitles import to_ass
 
@@ -242,6 +332,17 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="st
         subs = to_ass(words, OUT_W, OUT_H, work / "subs.ass") if words else None
         render(src, out, lay, subs, progress=build)
         mode = lay.mode
+    elif method == "erase":
+        main = caption_strip(lay)
+        w, h = lay.width // 2 * 2, lay.height // 2 * 2
+        if main:
+            a, b, size = main
+            subs = to_ass(words, w, h, work / "subs.ass", size=size,
+                          margin_v=max(0, round(h - (a + b) / 2 - size * 0.55))) if words else None
+        else:
+            subs = to_ass(words, w, h, work / "subs.ass") if words else None
+        erase_render(src, out, lay, [(a // 2 * 2, b) for a, b in lay.bands], subs, progress=build)
+        mode = "erase" if lay.bands else "clean"
     else:
         main = caption_strip(lay)
         strips = [(a, b) for a, b in lay.bands if not main or b <= main[0] or a >= main[1]]

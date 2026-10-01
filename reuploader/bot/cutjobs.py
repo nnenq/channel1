@@ -37,7 +37,9 @@ def bar(frac, width=12):
     return "▓" * n + "░" * (width - n)
 
 
-SUBS_MODE_RU = {"strip": "старые субтитры закрыл размытой полоской, наши — поверх неё",
+SUBS_MODES = {"subs": "erase", "subs_strip": "strip", "subs_crop": "crop"}     # режим задачи -> способ
+SUBS_MODE_RU = {"erase": "старые субтитры стёр (картинку под ними дорисовал), наши — на их месте",
+                "strip": "старые субтитры закрыл размытой полоской, наши — поверх неё",
                 "crop": "старые субтитры убрал — обрезал полосу с ними",
                 "blur": "старые субтитры размыл (они лежали поверх картинки)",
                 "clean": "старых субтитров не нашёл"}
@@ -98,7 +100,7 @@ class CutWorker:
             self.wake.clear()
 
     async def run(self, job):
-        if job["mode"] in ("subs", "subs_crop"):
+        if job["mode"] in SUBS_MODES:
             return await self.resub(job)
         if job["mode"] == "ai" and job["ai_state"] != "confirmed":
             return await self.estimate(job)
@@ -243,7 +245,7 @@ class CutWorker:
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
                 replace_subtitles, job["src_path"], out, self.transcriber(jid), job_dir(self.s, jid) / "tmp",
-                progress, "crop" if job["mode"] == "subs_crop" else "strip"))
+                progress, SUBS_MODES[job["mode"]]))
         except Exception as e:  # noqa: BLE001
             log.exception("субтитры %s", jid)
             await self._fail(job, f"{type(e).__name__}: {e}", msg, "заменить субтитры в")

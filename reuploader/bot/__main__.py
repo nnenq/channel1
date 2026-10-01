@@ -296,11 +296,14 @@ class BotApp:
             src.write_bytes(await r.read())
         self.db.update_cut_job(jid, src_path=str(src), status="uploaded", size=src.stat().st_size)
         btn = self.app_button("✂️ Обрезать (выбрать длину)", f"#cut{jid}")
-        buttons = [[{"text": "🔤 Субтитры: блюр-полоска", "callback_data": f"subs:{jid}"}],
-                   [{"text": "🔤 Субтитры: обрезать полосу", "callback_data": f"subsc:{jid}"}]] + ([[btn]] if btn else [])
+        buttons = [[{"text": "🔤 Стереть субтитры и вставить наши", "callback_data": f"subs:{jid}"}],
+                   [{"text": "🔤 Блюр-полоска", "callback_data": f"subsb:{jid}"},
+                    {"text": "🔤 Обрезать полосу", "callback_data": f"subsc:{jid}"}]] + ([[btn]] if btn else [])
         await self.tg.send(uid, f"Видео «{esc(name)}» получил. Что сделать?\n"
+                                "🔤 <b>Стереть</b> — сотру буквы старых субтитров, картинку под ними дорисую "
+                                "и поставлю наши анимированные на то же место.\n"
                                 "🔤 <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой от края до края "
-                                "и поставлю наши анимированные поверх неё, остальной кадр не трогаю.\n"
+                                "и поставлю наши поверх неё.\n"
                                 "🔤 <b>Обрезать полосу</b> — вырежу полосу со старым текстом и соберу вертикальное "
                                 "видео на размытом фоне.\n"
                                 "✂️ <b>Обрезать</b> — сокращу до нужной длины.", buttons)
@@ -350,7 +353,7 @@ class BotApp:
                         pass
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
             return
-        if data.startswith(("subs:", "subsc:")):
+        if data.startswith(("subs:", "subsb:", "subsc:")):
             job = self.db.cut_job(int(data.split(":")[1]))
             if not job or job["user_id"] != user.get("id"):
                 answer = "Нет доступа"
@@ -359,10 +362,10 @@ class BotApp:
             elif not job["src_path"] or not Path(job["src_path"]).exists():
                 answer = "Видео уже удалено — пришли его заново"
             else:
-                crop = data.startswith("subsc:")
+                mode, info = {"subs": ("subs", "стереть"), "subsb": ("subs_strip", "полоска"),
+                              "subsc": ("subs_crop", "обрезка")}[data.split(":")[0]]
                 self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
-                                       target_info="субтитры: " + ("обрезка" if crop else "полоска"), error=None,
-                                       report=None, mode="subs_crop" if crop else "subs",
+                                       target_info="субтитры: " + info, error=None, report=None, mode=mode,
                                        ai_state=None, estimate=None)
                 self.cut.poke()
                 answer = "Меняю субтитры — пришлю сюда"

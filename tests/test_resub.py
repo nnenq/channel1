@@ -64,7 +64,7 @@ def test_replace_subtitles_renders_vertical_with_ours(captioned, tmp_path):
 def test_strip_blurs_full_width_and_puts_ours_inside(captioned, tmp_path):
     heard = [Word(0.2, 0.6, "Губка"), Word(0.7, 1.2, "Боб")]
     out = tmp_path / "strip.mp4"
-    rep = resub.replace_subtitles(captioned, out, lambda p: heard, tmp_path / "w")      # по умолчанию — полоска
+    rep = resub.replace_subtitles(captioned, out, lambda p: heard, tmp_path / "w", method="strip")
     info = probe(out)
     assert (info.width, info.height) == (W, H)                    # размер кадра не меняется
     assert rep["mode"] == "strip" and rep["method"] == "strip"
@@ -76,6 +76,37 @@ def test_strip_blurs_full_width_and_puts_ours_inside(captioned, tmp_path):
     ass = (tmp_path / "w" / "subs.ass").read_text(encoding="utf-8")
     margin = int(ass.split("Style: Cap,")[1].split(",")[20])
     assert a < H - margin < b + size                              # наш текст — внутри полосы
+
+
+def test_letters_mask_takes_outlined_text_only():
+    import numpy as np
+    band = np.full((60, 400, 3), (40, 140, 60), np.uint8)              # зелёный фон
+    band[20:40, 50:70] = 0                                            # буква: светлое пятно в чёрной обводке
+    band[24:36, 54:66] = 255
+    band[10:50, 200:300] = 255                                        # большое белое пятно без обводки
+    m = resub.letters_mask(band, 400)
+    assert m[30, 60] and m[21, 60] and m[30, 51] and not m[30, 250] and not m[5, 380]   # буква с обводкой — да, пятно — нет
+    out = resub.erase(band, m)
+    assert out[30, 60].tolist() != [255, 255, 255] and (out[:, 200:300] == band[:, 200:300]).all()
+
+
+def test_erase_keeps_frame_and_removes_old_letters(captioned, tmp_path):
+    import numpy as np
+    heard = [Word(0.2, 0.6, "Губка"), Word(0.7, 1.2, "Боб")]
+    out = tmp_path / "erase.mp4"
+    rep = resub.replace_subtitles(captioned, out, lambda p: heard, tmp_path / "w")      # по умолчанию — стереть
+    info = probe(out)
+    assert (info.width, info.height) == (W, H) and rep["mode"] == "erase" and abs(info.duration - 12) < 0.5
+    lay = resub.analyze(captioned)
+    a, b = lay.bands[0]
+    raw = subprocess.run([ffmpeg_exe(), "-v", "error", "-ss", "5.25", "-i", str(out), "-frames:v", "1",
+                          "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True).stdout
+    frame = np.frombuffer(raw, np.uint8).reshape(H, W, 3)
+    raw0 = subprocess.run([ffmpeg_exe(), "-v", "error", "-ss", "5.25", "-i", str(captioned), "-frames:v", "1",
+                           "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], capture_output=True).stdout
+    before = resub.letters_mask(np.frombuffer(raw0, np.uint8).reshape(H, W, 3)[a:b], W).sum()
+    after = resub.letters_mask(frame[a:b], W).sum()
+    assert before > 0 and after < before * 0.2                     # старых букв почти не осталось
 
 
 # ---------- в боте: задача «subs» в очереди обрезки ----------
@@ -106,7 +137,8 @@ def worker(tmp_path, monkeypatch):
     return db, s, w, sent
 
 
-@pytest.mark.parametrize("mode,height,said", [("subs", H, "размытой полоской"), ("subs_crop", 1920, "обрезал полосу")])
+@pytest.mark.parametrize("mode,height,said", [("subs", H, "стёр"), ("subs_strip", H, "размытой полоской"),
+                                              ("subs_crop", 1920, "обрезал полосу")])
 def test_subs_job_runs_through_queue(worker, captioned, mode, height, said):
     from reuploader.bot.cutjobs import job_dir
     db, s, w, sent = worker
@@ -144,5 +176,5 @@ def test_subs_mode_via_api(worker, captioned):
             r2 = await c.post(f"/api/cut/{jid}/run", json={"mode": "subs", "method": "crop"}, headers=h)
             return r1, r2.status, await r2.json()
     strip, status, crop = asyncio.run(go())
-    assert strip["status"] == "queued" and strip["mode"] == "subs"
+    assert strip["status"] == "queued" and strip["mode"] == "subs"           # по умолчанию — стереть
     assert status == 200 and crop["mode"] == "subs_crop"

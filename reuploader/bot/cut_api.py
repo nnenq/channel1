@@ -6,10 +6,9 @@ from pathlib import Path
 
 from aiohttp import web
 
-from ..smartcut.core import format_report
 from ..smartcut.media import probe
 from ..smartcut.target import fit_params, parse_list, parse_range, target_from_channel, target_from_videos
-from .cutjobs import job_dir
+from .cutjobs import job_dir, report_text
 
 CHUNK = 8 * 1024 * 1024
 SAFE_NAME = re.compile(r"[^\w.\- ()\[\]а-яА-ЯёЁ]+")
@@ -54,7 +53,7 @@ class CutApi:
             "id": job["id"], "status": job["status"], "stage": job["stage"], "progress": job["progress"],
             "filename": job["filename"], "size": job["size"], "uploaded": uploaded,
             "target": job["target"], "target_info": job["target_info"], "error": job["error"],
-            "report": report, "report_text": format_report(report) if report else None,
+            "report": report, "report_text": report_text(report) if report else None,
             "link": (f"/dl/{job['dl_token']}" if self.w.bot.cut.link_valid(job) else None),
             "mode": job["mode"], "ai_state": job["ai_state"],
             "estimate": json.loads(job["estimate"]) if job["estimate"] else None,
@@ -131,6 +130,12 @@ class CutApi:
         body = await request.json()
         mode = body.get("mode")
         tolerance = 0.05
+        if mode == "subs":       # замена вшитых субтитров — длина не нужна
+            self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
+                                   target_info="замена субтитров", error=None, report=None, mode="subs",
+                                   ai_state=None, estimate=None)
+            self.w.bot.cut.poke()
+            return web.json_response(self._json(self.db.cut_job(job["id"])))
         if mode == "manual":
             try:
                 lo, hi = parse_range(str(body.get("seconds", "")))

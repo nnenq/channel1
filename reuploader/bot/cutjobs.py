@@ -1,4 +1,4 @@
-"""Очередь «умной обрезки»: одна задача за раз, прогресс в Telegram, выдача результата.
+"""Очередь «умной обрезки» и «замены субтитров»: одна задача за раз, прогресс в Telegram, выдача результата.
 
 Файлы лежат в data/cut/<id>/: src.* (исходник) и out.mp4 (результат).
 Исходник удаляется сразу после обработки; результат — после отправки в Telegram
@@ -35,6 +35,19 @@ def job_dir(settings, jid):
 def bar(frac, width=12):
     n = int(round(frac * width))
     return "▓" * n + "░" * (width - n)
+
+
+SUBS_MODE_RU = {"crop": "старые субтитры убрал — обрезал полосу с ними",
+                "blur": "старые субтитры размыл (они лежали поверх картинки)",
+                "clean": "старых субтитров не нашёл"}
+
+
+def report_text(report):
+    """Отчёт задачи для чата и панели."""
+    if report.get("kind") == "subs":
+        return (f"🔤 Субтитры заменены: {SUBS_MODE_RU.get(report['mode'], report['mode'])}; "
+                f"наши — по речи ({report['words']} слов).")
+    return format_report(report)
 
 
 def ai_model():
@@ -84,6 +97,8 @@ class CutWorker:
             self.wake.clear()
 
     async def run(self, job):
+        if job["mode"] == "subs":
+            return await self.resub(job)
         if job["mode"] == "ai" and job["ai_state"] != "confirmed":
             return await self.estimate(job)
         return await self.cut(job)
@@ -194,6 +209,55 @@ class CutWorker:
                 await self._edit(uid, msg["message_id"], "✂️ " + esc(text))
             return
 
+        await self._deliver(job, msg, out, report, f"✂️ {esc(job['filename'])}\n"
+                                                    f"{report['before']:.0f} с → {report['after']:.0f} с")
+
+    async def resub(self, job):
+        """Замена вшитых субтитров: старые убрать, наши анимированные — по речи."""
+        from ..resub import replace_subtitles
+
+        jid, uid = job["id"], job["user_id"]
+        self.db.update_cut_job(jid, status="running", stage="старт", progress=0)
+        head = f"🔤 Меняю субтитры в «{esc(job['filename'])}»…"
+        msg = await self.bot.tg.send(uid, f"{head}\n{bar(0)} 0%")
+        if msg:
+            self.db.update_cut_job(jid, tg_message_id=msg["message_id"])
+        state = {"stage": "старт", "frac": 0.0}
+
+        def progress(stage, frac):
+            state.update(stage=stage, frac=frac)
+            self.db.update_cut_job(jid, stage=stage, progress=round(frac, 3))
+
+        async def ticker():
+            last = None
+            while True:
+                await asyncio.sleep(PROGRESS_EVERY)
+                cur = (state["stage"], int(state["frac"] * 100))
+                if msg and cur != last:
+                    last = cur
+                    await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
+
+        out = job_dir(self.s, jid) / "out.mp4"
+        tick = asyncio.create_task(ticker())
+        try:
+            report = await asyncio.get_running_loop().run_in_executor(None, partial(
+                replace_subtitles, job["src_path"], out, self.transcriber(jid), job_dir(self.s, jid) / "tmp",
+                progress))
+        except Exception as e:  # noqa: BLE001
+            log.exception("субтитры %s", jid)
+            await self._fail(job, f"{type(e).__name__}: {e}", msg, "заменить субтитры в")
+            return
+        finally:
+            tick.cancel()
+            shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
+            Path(job["src_path"]).unlink(missing_ok=True)
+        report["kind"] = "subs"
+        await self._deliver(job, msg, out, report, f"🔤 {esc(job['filename'])}")
+
+    async def _deliver(self, job, msg, out, report, caption):
+        """Готовый файл: в Telegram (до лимита) или ссылкой на скачивание."""
+        jid, uid = job["id"], job["user_id"]
+        text = report_text(report)
         token = secrets.token_urlsafe(24)
         ttl = timedelta(hours=self.s.cut_link_ttl_h)
         self.db.update_cut_job(jid, status="done", stage="готово", progress=1, out_path=str(out),
@@ -206,8 +270,7 @@ class CutWorker:
         sent = False
         if size_mb <= TG_SEND_MAX_MB:
             try:
-                await self.bot.tg.send_video(uid, str(out), f"✂️ {esc(job['filename'])}\n"
-                                             f"{report['before']:.0f} с → {report['after']:.0f} с")
+                await self.bot.tg.send_video(uid, str(out), caption)
                 sent = True
             except Exception as e:  # noqa: BLE001
                 log.warning("не смог отправить видео: %s", e)
@@ -219,10 +282,10 @@ class CutWorker:
         if sent:        # отдали — удаляем результат (ссылка ещё 10 минут на всякий случай)
             self.db.update_cut_job(jid, delete_at=iso(utcnow() + timedelta(minutes=10)))
 
-    async def _fail(self, job, error, msg):
+    async def _fail(self, job, error, msg, what="обрезать"):
         self.db.update_cut_job(job["id"], status="failed", error=error[:500], finished_at=iso(utcnow()),
                                delete_at=iso(utcnow()))
-        text = f"❌ Не получилось обрезать «{esc(job['filename'])}»:\n<code>{esc(error)[:700]}</code>"
+        text = f"❌ Не получилось {what} «{esc(job['filename'])}»:\n<code>{esc(error)[:700]}</code>"
         if msg:
             await self._edit(job["user_id"], msg["message_id"], text)
         else:

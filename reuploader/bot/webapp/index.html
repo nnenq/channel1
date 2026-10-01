@@ -186,7 +186,7 @@ async function showHome() {
     <h1>Перезалив Shorts</h1>
     <div class="card">${cards || `<div class="empty">Пока нет проектов.<br>Проект = твои каналы-источники → 1 канал для перезалива.</div>`}</div>
     <div class="card" style="margin-top:12px"><div class="row tap chev" onclick="location.hash='#cut'">
-      <div class="grow"><b>✂️ Умная обрезка</b><div class="sub">Укоротить видео до нужной длины незаметно для зрителя</div></div></div></div>
+      <div class="grow"><b>✂️ Обрезка и 🔤 субтитры</b><div class="sub">Укоротить видео или заменить старые вшитые субтитры на наши</div></div></div></div>
     <div class="card" style="margin-top:12px"><div class="row tap chev" onclick="location.hash='#story'">
       <div class="grow"><b>🎬 Пересказы и теории</b><div class="sub">Из твоего мультфильма: бот пишет сценарии, ты озвучиваешь — бот собирает ролик</div></div></div></div>
     <h2>Новый проект</h2>
@@ -984,7 +984,7 @@ async function storyDelete(sid) {
 
 // ---------- умная обрезка ----------
 let cutPoll = null, cutMeta = null;
-const CUT_STATUS = { uploading: "загрузка", uploaded: "загружено — выбери длину", queued: "в очереди",
+const CUT_STATUS = { uploading: "загрузка", uploaded: "загружено — выбери, что сделать", queued: "в очереди",
   confirm: "жду подтверждения AI-анализа",
   running: "обрабатываю", done: "готово", failed: "ошибка" };
 const fmtSize = b => b > 1048576 ? (b / 1048576).toFixed(1) + " МБ" : Math.round(b / 1024) + " КБ";
@@ -997,15 +997,16 @@ async function showCut(jid) {
   cutMeta = d;
   const job = jid ? (d.jobs.find(j => j.id === jid) || await guarded(() => api("GET", `/api/cut/${jid}`))) : null;
   $root.innerHTML = `
-    <h1>✂️ Умная обрезка</h1>
-    <div class="hint" style="padding:0 4px 8px">Режу только в паузах речи, сохраняю хук в начале и развязку,
-      убираю «воду». Без новой озвучки и переходов. До ${d.max_mb} МБ и ${d.max_minutes} мин.</div>
+    <h1>✂️ Обрезка и субтитры</h1>
+    <div class="hint" style="padding:0 4px 8px">Загрузи видео и выбери: <b>обрезать</b> (режу только в паузах речи,
+      сохраняю хук и развязку) или <b>заменить субтитры</b> (уберу старые вшитые и добавлю наши анимированные).
+      До ${d.max_mb} МБ и ${d.max_minutes} мин. Видео до 20 МБ можно просто кинуть боту в чат.</div>
     <div id="cutJob">${job ? "" : `<div class="card"><div class="row">
       <input type="file" id="cutFile" accept="video/*" class="grow"></div>
       <div class="row"><button class="wide" onclick="startUpload()">Загрузить</button></div></div>`}</div>
     ${d.jobs.length ? `<h2>Недавние</h2><div class="card">${d.jobs.map(j => `
       <div class="row tap" onclick="location.hash='#cut${j.id}'"><div class="grow" style="min-width:0">
-        <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
+        <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${j.mode === "subs" ? "🔤 субтитры · " : ""}${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
         <span class="sub">›</span></div>`).join("")}</div>` : ""}`;
   if (job) renderJob(job);
 }
@@ -1068,7 +1069,10 @@ function renderJob(j) {
       <div id="tmBox"></div>
       ${cutMeta?.ai_available ? `<div class="row"><label style="display:flex;gap:8px;align-items:center">
         <input type="checkbox" id="tmAi"> 🤖 AI-анализ Claude (платно — сначала покажу цену)</label></div>` : ""}
-      <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>`;
+      <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>
+      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id})">🔤 Заменить субтитры</button></div>
+      <div class="hint" style="padding:0 16px 8px">Замена субтитров: найду полосу со старым текстом, уберу её
+        (или размою, если текст поверх картинки), сделаю вертикальное 1080×1920 и вшью наши субтитры по речи.</div>`;
   }
   if (j.status === "confirm" && j.estimate) {
     const e = j.estimate;
@@ -1082,11 +1086,16 @@ function renderJob(j) {
   if (j.status === "done" && j.report_text) {
     html += `<div class="row" style="white-space:pre-wrap;font-size:14px;line-height:1.45">${esc(j.report_text)}</div>`;
     if (j.link) html += `<div class="row"><button class="wide" onclick="openLink(location.origin + '${j.link}')">📥 Скачать результат</button></div>`;
-    html += `<div class="row"><button class="ghost" onclick="location.hash='#cut'">Обрезать другое видео</button></div>`;
+    html += `<div class="row"><button class="ghost" onclick="location.hash='#cut'">Загрузить другое видео</button></div>`;
   }
   html += `</div>`;
   box.innerHTML = html;
   if (document.getElementById("tmBox")) cutMode("manual");
+}
+
+async function runSubs(jid) {
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, { mode: "subs" }));
+  if (r) { haptic("success"); toast("Меняю субтитры — пришлю и в чат"); renderJob(r); }
 }
 
 async function decideAi(jid, yes) {

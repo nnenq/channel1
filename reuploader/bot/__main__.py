@@ -282,7 +282,8 @@ class BotApp:
         if size > 20 * 1024 * 1024:
             await self.tg.send(uid, "Файл больше 20 МБ — Telegram не даёт боту его скачать. "
                                     "Загрузи его через панель → «Умная обрезка» (там лимит "
-                                    f"{self.s.cut_max_mb} МБ).", [[btn]] if btn else None)
+                                    f"{self.s.cut_max_mb} МБ): после загрузки можно обрезать или "
+                                    "заменить субтитры.", [[btn]] if btn else None)
             return
         name = f.get("file_name") or "video.mp4"
         info = await self.tg.call("getFile", file_id=f["file_id"])
@@ -294,9 +295,11 @@ class BotApp:
         async with self.tg.session.get(url) as r:
             src.write_bytes(await r.read())
         self.db.update_cut_job(jid, src_path=str(src), status="uploaded", size=src.stat().st_size)
-        btn = self.app_button("✂️ Выбрать длину и обрезать", f"#cut{jid}")
-        await self.tg.send(uid, f"Видео «{esc(name)}» получил. Выбери целевую длину в панели:",
-                           [[btn]] if btn else None)
+        btn = self.app_button("✂️ Обрезать (выбрать длину)", f"#cut{jid}")
+        buttons = [[{"text": "🔤 Заменить субтитры", "callback_data": f"subs:{jid}"}]] + ([[btn]] if btn else [])
+        await self.tg.send(uid, f"Видео «{esc(name)}» получил. Что сделать?\n"
+                                "🔤 <b>Заменить субтитры</b> — уберу старые вшитые и добавлю наши анимированные.\n"
+                                "✂️ <b>Обрезать</b> — сокращу до нужной длины.", buttons)
 
     def status_text(self, uid):
         today = datetime.now(self.s.tz).date()
@@ -341,6 +344,22 @@ class BotApp:
                                            message_id=m["message_id"], reply_markup={"inline_keyboard": []})
                     except Exception:  # noqa: BLE001
                         pass
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
+        if data.startswith("subs:"):
+            job = self.db.cut_job(int(data.split(":")[1]))
+            if not job or job["user_id"] != user.get("id"):
+                answer = "Нет доступа"
+            elif job["status"] in ("queued", "running"):
+                answer = "Уже в работе"
+            elif not job["src_path"] or not Path(job["src_path"]).exists():
+                answer = "Видео уже удалено — пришли его заново"
+            else:
+                self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
+                                       target_info="замена субтитров", error=None, report=None, mode="subs",
+                                       ai_state=None, estimate=None)
+                self.cut.poke()
+                answer = "Меняю субтитры — пришлю сюда"
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
             return
         if data.startswith("st_tts:"):

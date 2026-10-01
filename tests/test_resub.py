@@ -53,12 +53,29 @@ def test_replace_subtitles_renders_vertical_with_ours(captioned, tmp_path):
     out = tmp_path / "out.mp4"
     stages = []
     rep = resub.replace_subtitles(captioned, out, lambda p: heard, tmp_path / "w",
-                                  progress=lambda st, f: stages.append((st, f)))
+                                  progress=lambda st, f: stages.append((st, f)), method="crop")
     info = probe(out)
     assert (info.width, info.height) == (1080, 1920) and abs(info.duration - 12) < 0.5
     assert rep["mode"] == "crop" and rep["words"] == 4
     assert "ГУБКА" in (tmp_path / "w" / "subs.ass").read_text(encoding="utf-8")
     assert stages[0][0] == "ищу старые субтитры" and stages[-1][1] > 0.9
+
+
+def test_strip_blurs_full_width_and_puts_ours_inside(captioned, tmp_path):
+    heard = [Word(0.2, 0.6, "Губка"), Word(0.7, 1.2, "Боб")]
+    out = tmp_path / "strip.mp4"
+    rep = resub.replace_subtitles(captioned, out, lambda p: heard, tmp_path / "w")      # по умолчанию — полоска
+    info = probe(out)
+    assert (info.width, info.height) == (W, H)                    # размер кадра не меняется
+    assert rep["mode"] == "strip" and rep["method"] == "strip"
+    lay = resub.analyze(captioned)
+    a, b, size = resub.caption_strip(lay)
+    assert a <= lay.bands[0][0] and b >= lay.bands[0][1] and b - a >= size * 1.9   # закрывает старый текст
+    fc = resub.strip_filter(lay, [(a, b)])
+    assert f"crop={W}:{b - a}:0:{a},gblur" in fc                  # от края до края
+    ass = (tmp_path / "w" / "subs.ass").read_text(encoding="utf-8")
+    margin = int(ass.split("Style: Cap,")[1].split(",")[20])
+    assert a < H - margin < b + size                              # наш текст — внутри полосы
 
 
 # ---------- в боте: задача «subs» в очереди обрезки ----------
@@ -89,19 +106,20 @@ def worker(tmp_path, monkeypatch):
     return db, s, w, sent
 
 
-def test_subs_job_runs_through_queue(worker, captioned):
+@pytest.mark.parametrize("mode,height,said", [("subs", H, "размытой полоской"), ("subs_crop", 1920, "обрезал полосу")])
+def test_subs_job_runs_through_queue(worker, captioned, mode, height, said):
     from reuploader.bot.cutjobs import job_dir
     db, s, w, sent = worker
     jid = db.create_cut_job(777, "krabs.mp4", 1, status="queued")
     d = job_dir(s, jid)
     d.mkdir(parents=True)
     shutil.copy(captioned, d / "src.mp4")
-    db.update_cut_job(jid, src_path=str(d / "src.mp4"), mode="subs")
+    db.update_cut_job(jid, src_path=str(d / "src.mp4"), mode=mode)
     asyncio.run(w.run(db.cut_job(jid)))
     job = db.cut_job(jid)
-    assert job["status"] == "done" and probe(job["out_path"]).height == 1920
+    assert job["status"] == "done" and probe(job["out_path"]).height == height
     assert ("<video>", "🔤 krabs.mp4") in sent and "Субтитры заменены" in sent[-1][0]
-    assert "обрезал полосу" in sent[-1][0] and not (d / "src.mp4").exists()   # исходник удалён
+    assert said in sent[-1][0] and not (d / "src.mp4").exists()   # исходник удалён
 
 
 def test_subs_mode_via_api(worker, captioned):
@@ -120,7 +138,11 @@ def test_subs_mode_via_api(worker, captioned):
 
     async def go():
         async with TestClient(TestServer(WebApp(db, s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
-            r = await c.post(f"/api/cut/{jid}/run", json={"mode": "subs"}, headers={"X-Init-Data": init_data(777)})
-            return r.status, await r.json()
-    status, body = asyncio.run(go())
-    assert status == 200 and body["status"] == "queued" and body["mode"] == "subs"
+            h = {"X-Init-Data": init_data(777)}
+            r1 = await (await c.post(f"/api/cut/{jid}/run", json={"mode": "subs"}, headers=h)).json()
+            db.update_cut_job(jid, status="uploaded")
+            r2 = await c.post(f"/api/cut/{jid}/run", json={"mode": "subs", "method": "crop"}, headers=h)
+            return r1, r2.status, await r2.json()
+    strip, status, crop = asyncio.run(go())
+    assert strip["status"] == "queued" and strip["mode"] == "subs"
+    assert status == 200 and crop["mode"] == "subs_crop"

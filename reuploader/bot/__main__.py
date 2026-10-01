@@ -296,9 +296,13 @@ class BotApp:
             src.write_bytes(await r.read())
         self.db.update_cut_job(jid, src_path=str(src), status="uploaded", size=src.stat().st_size)
         btn = self.app_button("✂️ Обрезать (выбрать длину)", f"#cut{jid}")
-        buttons = [[{"text": "🔤 Заменить субтитры", "callback_data": f"subs:{jid}"}]] + ([[btn]] if btn else [])
+        buttons = [[{"text": "🔤 Субтитры: блюр-полоска", "callback_data": f"subs:{jid}"}],
+                   [{"text": "🔤 Субтитры: обрезать полосу", "callback_data": f"subsc:{jid}"}]] + ([[btn]] if btn else [])
         await self.tg.send(uid, f"Видео «{esc(name)}» получил. Что сделать?\n"
-                                "🔤 <b>Заменить субтитры</b> — уберу старые вшитые и добавлю наши анимированные.\n"
+                                "🔤 <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой от края до края "
+                                "и поставлю наши анимированные поверх неё, остальной кадр не трогаю.\n"
+                                "🔤 <b>Обрезать полосу</b> — вырежу полосу со старым текстом и соберу вертикальное "
+                                "видео на размытом фоне.\n"
                                 "✂️ <b>Обрезать</b> — сокращу до нужной длины.", buttons)
 
     def status_text(self, uid):
@@ -346,7 +350,7 @@ class BotApp:
                         pass
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
             return
-        if data.startswith("subs:"):
+        if data.startswith(("subs:", "subsc:")):
             job = self.db.cut_job(int(data.split(":")[1]))
             if not job or job["user_id"] != user.get("id"):
                 answer = "Нет доступа"
@@ -355,8 +359,10 @@ class BotApp:
             elif not job["src_path"] or not Path(job["src_path"]).exists():
                 answer = "Видео уже удалено — пришли его заново"
             else:
+                crop = data.startswith("subsc:")
                 self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
-                                       target_info="замена субтитров", error=None, report=None, mode="subs",
+                                       target_info="субтитры: " + ("обрезка" if crop else "полоска"), error=None,
+                                       report=None, mode="subs_crop" if crop else "subs",
                                        ai_state=None, estimate=None)
                 self.cut.poke()
                 answer = "Меняю субтитры — пришлю сюда"

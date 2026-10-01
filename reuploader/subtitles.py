@@ -75,15 +75,16 @@ def _animated_events(start, end, group):
     return events
 
 
-def to_ass(words, width, height, path, animated=True, overlay=None, overlay_until=None):
+def to_ass(words, width, height, path, animated=True, overlay=None, overlay_until=None, size=None, margin_v=None):
     """Пишет .ass для видео width×height. -> path или None, если слов нет.
-    overlay — надпись-крючок сверху кадра (до overlay_until секунд, по умолчанию — до конца)."""
+    overlay — надпись-крючок сверху кадра (до overlay_until секунд, по умолчанию — до конца).
+    size, margin_v — свой размер шрифта и отступ снизу (по умолчанию 4,5 % и 28 % высоты)."""
     lines = groups(words)
     if not lines and not overlay:
         return None
     w, h = width or 1080, height or 1920
-    size = round(h * 0.045)
-    margin_v = round(h * 0.28)          # выше нижнего интерфейса Shorts
+    size = size or round(h * 0.045)
+    margin_v = round(h * 0.28) if margin_v is None else margin_v     # выше нижнего интерфейса Shorts
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {w}

@@ -4,9 +4,11 @@ analyze()  — по кадрам (2 в секунду, уменьшенным) �
              размытых полей) и в каких строках постоянно появляется текст с обводкой (субтитры,
              надписи-заголовки). Без OCR: текст = светлые (белые/жёлтые) штрихи с тёмной обводкой,
              много чередований по горизонтали, и стоит в одном месте у многих кадров.
-plan()     — что оставить: если без полос с текстом остаётся большой кусок картинки — обрезаем по
-             нему (чисто); иначе размываем полосы.
-render()   — вертикальное 1080×1920: кадр по центру, размытый фон, наши субтитры.
+Два способа (method):
+  strip — «полоска»: старые субтитры закрываются размытой полосой на всю ширину кадра, наши
+          субтитры — по центру этой полосы; остальной кадр и размер видео не меняются (по умолчанию);
+  crop  — «обрезка»: полоса с текстом вырезается (plan), кадр собирается в вертикальное 1080×1920
+          на размытом фоне, наши субтитры — как обычно.
 """
 import subprocess
 from dataclasses import dataclass, field
@@ -22,6 +24,7 @@ SCAN_W = 360
 SCAN_FPS = 2
 TEXT_FREQ = 0.2          # строка «с текстом», если текст в ней в ≥20 % кадров
 MIN_KEEP = 0.6           # обрезаем, если остаётся ≥60 % картинки; иначе размываем полосы
+METHODS = ("strip", "crop")
 
 
 @dataclass
@@ -171,7 +174,42 @@ def build_filter(lay, subs_name=None):
     return fc + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
 
 
-def render(src, out, lay, subs=None, progress=None):
+def caption_strip(lay):
+    """Главная полоса со старыми субтитрами (нижняя в картинке) — её закрываем и туда ставим наши.
+    -> (y0, y1, размер шрифта) или None. Полоса расширяется, чтобы в неё влезли наши субтитры."""
+    if not lay.bands:
+        return None
+    c0, c1 = lay.content
+    inside = [bd for bd in lay.bands if c0 <= (bd[0] + bd[1]) / 2 <= c1] or lay.bands
+    a, b = max(inside, key=lambda bd: bd[1])
+    size = max(18, round(lay.height * 0.045))
+    need = round(size * 1.9)
+    if b - a < need:
+        mid = (a + b) / 2
+        a, b = int(mid - need / 2), int(mid + need / 2)
+    a, b = max(0, a), min(lay.height, b)
+    return a // 2 * 2, b // 2 * 2, size
+
+
+def strip_filter(lay, strips, subs_name=None):
+    """Размытые полосы на всю ширину поверх старого текста; размер кадра не меняется."""
+    w, h = lay.width // 2 * 2, lay.height // 2 * 2
+    chain = f"[0:v]crop={w}:{h}:0:0,setsar=1"
+    if strips:
+        n = len(strips)
+        chain += f",split={n + 1}[base]" + "".join(f"[s{i}]" for i in range(n)) + ";"
+        prev = "base"
+        for i, (a, b) in enumerate(strips):
+            hh = max(2, (min(b, h) - a) // 2 * 2)
+            chain += (f"[s{i}]crop={w}:{hh}:0:{a},gblur=sigma=22:steps=3,eq=brightness=-0.04[b{i}];"
+                      f"[{prev}][b{i}]overlay=0:{a}[m{i}];")
+            prev = f"m{i}"
+        chain += f"[{prev}]null"
+    return chain + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
+
+
+def render(src, out, lay, subs=None, progress=None, strips=None):
+    """strips=None — способ «обрезка» (вертикальное 1080×1920); список полос — способ «полоска»."""
     from . import ffprog
 
     src, out = str(Path(src).resolve()), Path(out).resolve()
@@ -179,15 +217,16 @@ def render(src, out, lay, subs=None, progress=None):
     if subs:
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
+    fc = strip_filter(lay, strips, subs_name) if strips is not None else build_filter(lay, subs_name)
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", src,
-           "-filter_complex", build_filter(lay, subs_name), "-map", "[v]", "-map", "0:a?",
+           "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
            "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-c:a", "aac", "-b:a", "160k",
            "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
     ffprog.run(cmd, probe(src).duration, progress, cwd=cwd)
     return out
 
 
-def replace_subtitles(src, out, transcriber, work_dir, progress=None):
+def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="strip"):
     """Всё вместе. progress(этап, доля). -> dict для отчёта."""
     from .subtitles import to_ass
 
@@ -198,7 +237,24 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None):
     lay = analyze(src)
     say("распознаю речь", 0.1)
     words = transcriber(src)
-    subs = to_ass(words, OUT_W, OUT_H, work / "subs.ass") if words else None
-    render(src, out, lay, subs, progress=lambda f: say("собираю видео", 0.4 + 0.6 * f))
-    return {"mode": lay.mode, "bands": lay.bands, "content": lay.content, "keep": lay.keep,
+    build = lambda f: say("собираю видео", 0.4 + 0.6 * f)   # noqa: E731
+    if method == "crop":
+        subs = to_ass(words, OUT_W, OUT_H, work / "subs.ass") if words else None
+        render(src, out, lay, subs, progress=build)
+        mode = lay.mode
+    else:
+        main = caption_strip(lay)
+        strips = [(a, b) for a, b in lay.bands if not main or b <= main[0] or a >= main[1]]
+        w, h = lay.width // 2 * 2, lay.height // 2 * 2
+        if main:
+            a, b, size = main
+            strips.append((a, b))
+            # наш текст — по центру полосы (выравнивание по низу строки)
+            subs = to_ass(words, w, h, work / "subs.ass", size=size,
+                          margin_v=max(0, round(h - (a + b) / 2 - size * 0.55))) if words else None
+        else:
+            subs = to_ass(words, w, h, work / "subs.ass") if words else None
+        render(src, out, lay, subs, progress=build, strips=sorted(strips))
+        mode = "strip" if main else "clean"
+    return {"mode": mode, "method": method, "bands": lay.bands, "content": lay.content, "keep": lay.keep,
             "words": len(words), "size": [lay.width, lay.height]}

@@ -1006,7 +1006,7 @@ async function showCut(jid) {
       <div class="row"><button class="wide" onclick="startUpload()">Загрузить</button></div></div>`}</div>
     ${d.jobs.length ? `<h2>Недавние</h2><div class="card">${d.jobs.map(j => `
       <div class="row tap" onclick="location.hash='#cut${j.id}'"><div class="grow" style="min-width:0">
-        <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${j.mode === "subs" ? "🔤 субтитры · " : ""}${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
+        <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${(j.mode || "").startsWith("subs") ? "🔤 субтитры · " : ""}${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
         <span class="sub">›</span></div>`).join("")}</div>` : ""}`;
   if (job) renderJob(job);
 }
@@ -1070,9 +1070,11 @@ function renderJob(j) {
       ${cutMeta?.ai_available ? `<div class="row"><label style="display:flex;gap:8px;align-items:center">
         <input type="checkbox" id="tmAi"> 🤖 AI-анализ Claude (платно — сначала покажу цену)</label></div>` : ""}
       <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>
-      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id})">🔤 Заменить субтитры</button></div>
-      <div class="hint" style="padding:0 16px 8px">Замена субтитров: найду полосу со старым текстом, уберу её
-        (или размою, если текст поверх картинки), сделаю вертикальное 1080×1920 и вшью наши субтитры по речи.</div>`;
+      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id}, 'strip')">🔤 Субтитры: блюр-полоска</button></div>
+      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id}, 'crop')">🔤 Субтитры: обрезать полосу</button></div>
+      <div class="hint" style="padding:0 16px 8px"><b>Блюр-полоска</b> — закрою старые субтитры размытой полосой
+        от края до края и поставлю наши анимированные поверх неё, остальной кадр не трогаю.
+        <b>Обрезать полосу</b> — вырежу полосу со старым текстом и соберу вертикальное 1080×1920 на размытом фоне.</div>`;
   }
   if (j.status === "confirm" && j.estimate) {
     const e = j.estimate;
@@ -1093,8 +1095,8 @@ function renderJob(j) {
   if (document.getElementById("tmBox")) cutMode("manual");
 }
 
-async function runSubs(jid) {
-  const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, { mode: "subs" }));
+async function runSubs(jid, method) {
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, { mode: "subs", method }));
   if (r) { haptic("success"); toast("Меняю субтитры — пришлю и в чат"); renderJob(r); }
 }
 

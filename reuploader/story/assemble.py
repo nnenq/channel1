@@ -4,8 +4,8 @@
 2. align(): каждая фраза сценария получает свой отрезок в записи голоса
    (сопоставление слов сценария и распознанных слов; если человек отошёл от текста —
    пропорционально числу слов).
-3. plan_clips(): под каждую фразу — кусок мультфильма той же длины, начиная с отрезка,
-   который указан в сценарии.
+3. plan_clips(): под каждую фразу — кадры мультфильма той же общей длины, начиная с отрезка,
+   который указан в сценарии; кадр меняется каждые ~1,9 с (в первые 3 с — ~1,2 с) на следующую сцену.
 4. render(): вертикальное видео 1080×1920 — кадр мультфильма по центру, размытый фон,
    надпись-крючок сверху, субтитры по голосу. Звук мультфильма выключен (по умолчанию).
 """
@@ -60,13 +60,51 @@ def align(lines, words, voice_dur):
     return [(round(a, 3), round(max(b, a + 0.3), 3)) for a, b in zip(starts, ends)]
 
 
-def plan_clips(lines, spans, src_dur):
-    """-> [(начало в мультфильме, длительность)] — по куску на каждую фразу."""
-    clips = []
+HOOK_SECONDS = 3.0      # первые секунды режем ещё быстрее
+HOOK_SHOT = 1.2
+SHOT = 1.9              # как у популярных пересказов: новый кадр каждые 1,5–2 с
+MIN_TAIL = 0.6
+
+
+def scene_cuts(src, t0, t1, threshold=0.3):
+    """Смены сцен в мультфильме на отрезке [t0, t1] -> [время в секундах]."""
+    import re as _re
+
+    cmd = [ffmpeg_exe(), "-hide_banner", "-ss", f"{t0:.3f}", "-t", f"{max(0.1, t1 - t0):.3f}", "-i", str(src),
+           "-an", "-vf", f"scale=160:-2,select='gt(scene,{threshold})',showinfo", "-f", "null", "-"]
+    err = subprocess.run(cmd, capture_output=True, text=True).stderr
+    return [round(t0 + float(x), 3) for x in _re.findall(r"pts_time:([0-9.]+)", err)]
+
+
+def plan_clips(lines, spans, src_dur, cuts=None):
+    """-> [(начало в мультфильме, длительность)].
+
+    Без cuts — по куску на фразу. С cuts(t0, t1) -> [смены сцен] — быстрая нарезка: фраза делится
+    на кадры по ~1,9 с (в первые 3 с ролика — по ~1,2 с), и каждый следующий кадр начинается
+    со следующей сцены мультфильма (по порядку, от отрезка фразы)."""
+    clips, made = [], 0.0
     for ln, (t0, t1) in zip(lines, spans):
         d = t1 - t0
         start = max(0.0, min(float(ln["from"]), max(0.0, src_dur - d - 0.05)))
-        clips.append((round(start, 3), round(d, 3)))
+        if not cuts:
+            clips.append((round(start, 3), round(d, 3)))
+            continue
+        win_end = min(src_dur, max(float(ln.get("to") or 0), start + d) + 6)
+        cs = sorted(c for c in cuts(start, win_end) if start + 0.3 < c < win_end - 0.3)
+        pos, left = start, d
+        while left > 0.01:
+            seg = min(left, HOOK_SHOT if made < HOOK_SECONDS else SHOT)
+            if left - seg < MIN_TAIL:
+                seg = left
+            pos = max(0.0, min(pos, src_dur - seg - 0.05))
+            if clips and abs(clips[-1][0] + clips[-1][1] - pos) < 0.02:
+                clips[-1] = (clips[-1][0], round(clips[-1][1] + seg, 3))   # тот же кадр продолжается
+            else:
+                clips.append((round(pos, 3), round(seg, 3)))
+            made += seg
+            left -= seg
+            nxt = next((c for c in cs if c >= pos + seg - 0.05), None)
+            pos = nxt + 0.04 if nxt is not None else pos + seg
     return clips
 
 
@@ -108,7 +146,7 @@ def render(src, voice, clips, out, subs=None, crf=21, progress=None):
     return out
 
 
-def build_story(src, voice, script, out, transcriber, work_dir, progress=None):
+def build_story(src, voice, script, out, transcriber, work_dir, progress=None, fast_cuts=True):
     """Всё вместе. -> dict(duration, lines, words) для отчёта.
     progress(этап, доля 0..1) — распознавание голоса 0–35 %, сборка видео 35–100 %."""
     from ..subtitles import to_ass
@@ -123,7 +161,19 @@ def build_story(src, voice, script, out, transcriber, work_dir, progress=None):
     words = transcriber(voice)
     lines = script["lines"]
     spans = align(lines, words, vinfo.duration)
-    clips = plan_clips(lines, spans, probe(src).duration)
+    found = {}
+
+    def cuts(a, b):
+        if (a, b) not in found:
+            try:
+                found[(a, b)] = scene_cuts(src, a, b)
+            except Exception:  # noqa: BLE001 — не нашли сцены: кусок целиком
+                found[(a, b)] = []
+        return found[(a, b)]
+
+    if progress:
+        progress("ищу смены кадров", 0.33)
+    clips = plan_clips(lines, spans, probe(src).duration, cuts if fast_cuts else None)
     subs = to_ass(words, W, H, work / "story.ass", overlay=script.get("overlay") or None,
                   overlay_until=vinfo.duration)
     render(src, voice, clips, out, subs,

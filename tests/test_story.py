@@ -305,6 +305,20 @@ def _wav_bytes(seconds=1.0, rate=24000):
 KEY = "sk_" + "a1" * 24
 
 
+def test_fast_cuts_follow_scene_changes():
+    lines = [{"text": "Планктон уменьшил Патрика", "from": 50, "to": 56},
+             {"text": "Потом надел на него свой костюм и отправил в ресторан", "from": 100, "to": 110}]
+    spans = [(0.0, 3.0), (3.0, 9.0)]
+    scenes = [51.0, 52.5, 55.0, 101.0, 104.0, 106.5, 108.0]
+    clips = plan_clips(lines, spans, 600, cuts=lambda a, b: [c for c in scenes if a <= c <= b])
+    assert abs(sum(d for _, d in clips) - 9.0) < 0.01               # длина голоса не меняется
+    assert clips[0] == (50.0, 1.2) and clips[1][0] == 52.54          # крючок: короткие кадры, новая сцена
+    assert all(d <= 1.9 + 0.6 for _, d in clips[2:])                 # дальше — не дольше ~2 с на кадр
+    assert len(clips) >= 5 and [c[0] for c in clips] == sorted(c[0] for c in clips)
+    still = plan_clips(lines, spans, 600, cuts=lambda a, b: [])     # без смен сцен — непрерывный кусок
+    assert still == [(50.0, 3.0), (100.0, 6.0)]
+
+
 def test_eleven_chunks_joins_and_retries(tmp_path):
     import wave
     from reuploader.story import eleven

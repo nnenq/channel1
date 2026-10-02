@@ -429,3 +429,27 @@ def test_own_eleven_key_api(bot_env, monkeypatch):
     assert r["friend"]["has_key"] is False                  # друг ключом владельца не пользуется
     assert r["list"]["tts_available"] is True and r["flist"]["tts_available"] is False
     assert r["del"]["has_key"] is False and e.db.eleven(777) == ("", "")
+
+
+def test_mirror_option_flips_cartoon_not_subtitles(bot_env, media, monkeypatch):
+    from reuploader.story import assemble
+    fc = assemble.build_filter(2, "s.ass", mirror=True)
+    assert "concat=n=2:v=1:a=0,hflip[cat]" in fc and fc.index("hflip") < fc.index("ass=s.ass")
+    assert "hflip" not in assemble.build_filter(2, "s.ass")
+    e = bot_env
+    from reuploader.bot import stories
+    seen = {}
+
+    def fake_build(src, voice, body, out, tr, work, rep, **kw):
+        seen.update(kw)
+        shutil.copy(src, out)
+        return {}
+    monkeypatch.setattr(stories, "build_story", fake_build)
+    sid = e.new_story(text=" ".join(w.text for w in e.voice_words))
+    e.db.update_story(sid, mirror=1)
+    asyncio.run(e.w.run(e.db.story(sid)))
+    item = e.db.story_scripts(sid)[0]
+    e.db.update_story_script(item["id"], status="queued", voice_path=str(media[0] / "voice.ogg"), voice_src="user")
+    monkeypatch.setattr(e.w.bot.tg, "send_video", lambda *a, **k: asyncio.sleep(0), raising=False)
+    asyncio.run(e.w.render(e.db.story_script(item["id"])))
+    assert seen.get("mirror") is True

@@ -299,7 +299,8 @@ class StoryWorker:
             self.db.update_story_script(item["id"], voice_path=voice_path)
         try:
             await asyncio.get_running_loop().run_in_executor(None, partial(
-                build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}", build_rep))
+                build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}", build_rep,
+                mirror=bool(story["mirror"])))
         except Exception as e:  # noqa: BLE001
             log.exception("сборка %s", item["id"])
             self.db.update_story_script(item["id"], status="failed", error=f"{type(e).__name__}: {e}"[:500])
@@ -380,7 +381,7 @@ class StoryApi:
                             "why": body["why"], "text": "\n".join(ln["text"] for ln in body["lines"]),
                             "link": f"/sdl/{it['dl_token']}" if it["dl_token"] else None})
         return {k: st[k] for k in ("id", "status", "stage", "progress", "filename", "size", "duration", "kind",
-                                   "lang", "count", "seconds", "topic", "error", "ai_state")} | {
+                                   "lang", "count", "seconds", "topic", "error", "ai_state", "mirror")} | {
             "uploaded": uploaded, "scripts": scripts,
             "has_transcript": (story_dir(self.s, st["id"]) / "words.json").exists(),
             "estimate": json.loads(st["estimate"]) if st["estimate"] else None}
@@ -473,7 +474,8 @@ class StoryApi:
         voice = str(body.get("tts_voice") or "")
         voice = voice if VOICE_ID.match(voice) else None
         uid = request["user"]["id"]
-        self.db.update_story(st["id"], tts=int(bool(body.get("tts")) and self.worker.tts_available(uid)),
+        self.db.update_story(st["id"], mirror=int(bool(body.get("mirror"))),
+                             tts=int(bool(body.get("tts")) and self.worker.tts_available(uid)),
                              tts_voice=voice)
         self.db.update_story(st["id"], status="queued", stage="в очереди", progress=0, kind=kind, lang=lang,
                              count=count, seconds=seconds, topic=str(body.get("topic") or "")[:100] or None,

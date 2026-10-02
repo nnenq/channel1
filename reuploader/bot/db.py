@@ -239,6 +239,7 @@ MIGRATIONS = [
     ("slots", "progress", "REAL"),
     ("story_scripts", "progress", "REAL"),
     ("story_scripts", "stage", "TEXT"),
+    ("stories", "mirror", "INTEGER NOT NULL DEFAULT 0"),   # отзеркалить кадры мультфильма
 ]
 
 PROJECT_FIELDS = {

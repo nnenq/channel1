@@ -713,7 +713,7 @@ const STORY_STATUS = { uploading: "загрузка", uploaded: "загруже�
 const SCRIPT_STATUS = { wait_voice: "🎙 жду голосовое", queued: "⏳ в очереди на сборку", running: "⏳ собираю ролик",
   done: "✅ ролик готов", failed: "❌ ошибка" };
 const STORY_KINDS = [["chat", "Чат Claude"], ["auto", "Бот решит"], ["recap", "Пересказ"], ["theory", "Теория"], ["manual", "Свой текст"]];
-let storyForm = { kind: "chat", chatKind: "auto", lang: "ru", count: 3, seconds: 60, topic: "", text: "", answer: "",
+let storyForm = { kind: "chat", chatKind: "auto", lang: "ru", count: 3, seconds: 60, topic: "", text: "", answer: "", mirror: false,
   tts: false, tts_voice: "" };
 let eleven = null, voiceAudio = null;
 function storyTtsBlock() {
@@ -879,6 +879,9 @@ function renderStory(st) {
       <div class="row"><div class="grow">Сколько роликов</div><input class="num" type="number" min="1" max="5" value="${f.count}" oninput="storySet('count', +this.value)"></div>
       <div class="row"><div class="grow">Длина ролика, сек<div class="sub">30–150; для Shorts лучше 45–75</div></div><input class="num" type="number" min="30" max="150" value="${f.seconds}" oninput="storySet('seconds', +this.value)"></div>
       <div class="row"><input class="grow" placeholder="О ком/о чём (необязательно): например, Эльза" value="${esc(f.topic)}" oninput="storySet('topic', this.value)"></div>`}
+      <div class="row"><div class="grow">🪞 Отзеркалить кадры<div class="sub">картинка мультфильма отражается слева направо;
+        наши субтитры не зеркалятся. От Content ID почти не спасает, а надписи в кадре станут задом наперёд</div></div>
+        <label class="switch"><input type="checkbox" ${f.mirror ? "checked" : ""} onchange="storySet('mirror', this.checked)"><span></span></label></div>
       ${storyTtsBlock()}
       ${f.kind === "chat" ? "" : `<div class="row"><button class="wide" onclick="storyRun(${st.id})">${f.kind === "manual" ? "Подобрать сцены под мой текст" : "✍️ Написать сценарии"}</button></div>`}`;
   }
@@ -953,7 +956,7 @@ async function storyRunAnswer(sid) {
   const text = (storyForm.answer || "").trim();
   if (text.length < 20) return alertMsg("Вставь ответ Claude.");
   const d = await guarded(() => api("POST", `/api/stories/${sid}/run`,
-    { kind: "manual", text, lang: storyForm.lang, tts: storyForm.tts, tts_voice: storyForm.tts_voice || eleven?.voice || "" }));
+    { kind: "manual", text, lang: storyForm.lang, tts: storyForm.tts, mirror: storyForm.mirror, tts_voice: storyForm.tts_voice || eleven?.voice || "" }));
   if (d) { haptic("success"); toast("Собираю сценарии — пришлю в Telegram для озвучки"); storyForm.answer = ""; renderStory(d); }
 }
 async function storyRun(sid, kindOverride) {

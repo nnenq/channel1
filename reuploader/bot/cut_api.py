@@ -192,13 +192,17 @@ class CutApi:
         for p in mu.tracks(music_dir(self.s, uid)):
             items.append({"name": p.name, "size": p.stat().st_size})
         return web.json_response(self.db.prefs(uid) | {"tracks": items, "levels": mu.LEVEL_RU,
+                                                        "builtin": mu.builtin_choices(),
                                                         "max_tracks": mu.MAX_TRACKS, "max_mb": mu.MAX_MB})
 
     def _track(self, request):
         from .. import music as mu
+        from .music_builtin_api import builtin_file
         from .web import ApiError
 
         name = Path(request.match_info["name"]).name
+        if name.startswith(mu.BUILTIN):
+            return builtin_file(self.s, name)
         path = music_dir(self.s, request["user"]["id"]) / name
         if path.suffix.lower() not in mu.AUDIO_EXT or not path.is_file():
             raise ApiError("Трек не найден.", status=404)
@@ -241,9 +245,15 @@ class CutApi:
         return self._music_json(uid)
 
     async def music_file(self, request):
-        return web.FileResponse(self._track(request), headers={"Cache-Control": "private, max-age=3600"})
+        path = await asyncio.get_running_loop().run_in_executor(None, self._track, request)
+        return web.FileResponse(path, headers={"Cache-Control": "private, max-age=3600"})
 
     async def music_delete(self, request):
+        from .. import music as mu
+        from .web import ApiError
+
+        if request.match_info["name"].startswith(mu.BUILTIN):
+            raise ApiError("Встроенную мелодию удалить нельзя — можно выбрать другую или выключить музыку.")
         self._track(request).unlink(missing_ok=True)
         return self._music_json(request["user"]["id"])
 
@@ -254,6 +264,12 @@ class CutApi:
         kw = {k: int(bool(body[k])) for k in ("music_on", "enhance") if k in body}
         if body.get("music_level") in mu.LEVELS:
             kw["music_level"] = body["music_level"]
+        if "music_track" in body:
+            choice = str(body["music_track"] or "")
+            ok = (not choice or choice in {b["id"] for b in mu.builtin_choices()}
+                  or choice in {p.name for p in mu.tracks(music_dir(self.s, request["user"]["id"]))})
+            if ok:
+                kw["music_track"] = choice
         self.db.set_prefs(request["user"]["id"], **kw)
         return self._music_json(request["user"]["id"])
 

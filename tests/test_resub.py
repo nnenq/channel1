@@ -235,7 +235,10 @@ def test_music_api_upload_prefs_delete(worker, track):
             r["file"] = (await c.get("/api/music/calm%20beat.mp3", headers=h)).status
             r["foreign"] = (await c.get("/api/music/calm%20beat.mp3", headers=other)).status
             r["prefs"] = await (await c.patch("/api/music", json={"music_level": "low", "enhance": False,
-                                                                  "music_level_x": 1}, headers=h)).json()
+                                                                  "music_track": "calm beat.mp3"}, headers=h)).json()
+            r["badtrack"] = await (await c.patch("/api/music", json={"music_track": "nope.mp3"}, headers=h)).json()
+            r["builtin"] = (await c.get("/api/music/builtin:fun", headers=h)).status
+            r["delbuiltin"] = (await c.delete("/api/music/builtin:fun", headers=h)).status
             r["del"] = await (await c.delete("/api/music/calm%20beat.mp3", headers=h)).json()
             return r
     r = asyncio.run(go())
@@ -245,6 +248,8 @@ def test_music_api_upload_prefs_delete(worker, track):
     assert r["exists"] and not (music_dir(s, 777) / "calm beat.mp3").exists()          # удалён в конце
     assert r["file"] == 200 and r["foreign"] == 404                                    # чужие треки не видно
     assert r["prefs"]["music_level"] == "low" and r["prefs"]["enhance"] == 0
+    assert r["prefs"]["music_track"] == "calm beat.mp3" and r["badtrack"]["music_track"] == "calm beat.mp3"
+    assert r["builtin"] == 200 and r["delbuiltin"] == 400 and len(r["empty"]["builtin"]) == 2
     assert r["del"]["tracks"] == []
 
 
@@ -260,10 +265,37 @@ def test_subs_job_uses_users_music(worker, captioned, track):
         db.update_cut_job(jid, src_path=str(d / "src.mp4"), mode="subs_strip")
         asyncio.run(w.run(db.cut_job(jid)))
         return db.cut_job(jid)
-    assert job()["status"] == "done" and "Добавь треки в панели" in sent[-1][0]       # треков нет — подсказка
+    assert job()["status"] == "done" and "🎵 Фоновая музыка: Встроенная: весёлая" in sent[-1][0]  # своих нет
     music_dir(s, 777).mkdir(parents=True)
     shutil.copy(track, music_dir(s, 777) / "calm beat.mp3")
     assert job()["status"] == "done" and "🎵 Фоновая музыка: calm beat.mp3" in sent[-1][0]
+    db.set_prefs(777, music_track="builtin:mystery")
+    assert job()["status"] == "done" and "Встроенная: загадочная" in sent[-1][0]          # выбрана вручную
     db.set_prefs(777, music_on=0)
     job()
     assert "🎵" not in sent[-1][0]                                                       # музыку выключили
+
+
+def test_builtin_melody_is_clean_loop(tmp_path):
+    import numpy as np
+    from reuploader import music_builtin as mb
+    for key, p in mb.PRESETS.items():
+        x = mb.synth(key)
+        beat = 60 / p["bpm"]
+        assert abs(len(x) / mb.SR - beat * 8 * len(p["chords"]) * mb.ROUNDS) < 0.01   # целое число тактов
+        assert np.abs(x).max() <= 0.9 and np.sqrt(np.mean(x ** 2)) > 0.05            # не клиппует, не тишина
+    f = mb.ensure(tmp_path, "fun")
+    assert f.exists() and probe(f).duration > 60 and mb.ensure(tmp_path, "fun") == f    # кэш
+
+
+def test_resolve_track_choice(tmp_path, track):
+    from reuploader import music
+    own, built = tmp_path / "own", tmp_path / "built"
+    assert music.resolve("", own, built)[1] == "Встроенная: весёлая"                    # своих нет
+    own.mkdir()
+    shutil.copy(track, own / "a.mp3")
+    assert music.resolve("", own, built) == (own / "a.mp3", "a.mp3")
+    assert music.resolve("a.mp3", own, built)[1] == "a.mp3"
+    assert music.resolve("builtin:mystery", own, built)[1] == "Встроенная: загадочная"
+    assert music.resolve("deleted.mp3", own, built)[1] == "a.mp3"                     # удалённый — случайный
+    assert music.resolve("../../etc/passwd", own, built)[1] == "a.mp3"

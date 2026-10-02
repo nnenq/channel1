@@ -240,6 +240,7 @@ MIGRATIONS = [
     ("story_scripts", "progress", "REAL"),
     ("story_scripts", "stage", "TEXT"),
     ("stories", "mirror", "INTEGER NOT NULL DEFAULT 0"),   # отзеркалить кадры мультфильма
+    ("user_prefs", "music_track", "TEXT NOT NULL DEFAULT ''"),   # "" — случайный, builtin:<имя> или свой файл
 ]
 
 PROJECT_FIELDS = {
@@ -495,18 +496,21 @@ class DB:
         self.x("DELETE FROM users WHERE id = ?", uid)
 
     # --- оформление роликов ---
-    PREF_DEFAULTS = {"music_on": 1, "music_level": "mid", "enhance": 1}
+    PREF_DEFAULTS = {"music_on": 1, "music_level": "mid", "enhance": 1, "music_track": ""}
 
     def prefs(self, uid):
-        r = self.one("SELECT music_on, music_level, enhance FROM user_prefs WHERE user_id = ?", uid)
+        r = self.one("SELECT music_on, music_level, enhance, music_track FROM user_prefs WHERE user_id = ?", uid)
         return dict(r) if r else dict(self.PREF_DEFAULTS)
 
     def set_prefs(self, uid, **kw):
         cur = self.prefs(uid) | {k: v for k, v in kw.items() if k in self.PREF_DEFAULTS}
-        self.x("""INSERT INTO user_prefs(user_id, music_on, music_level, enhance, updated_at) VALUES(?, ?, ?, ?, ?)
+        self.x("""INSERT INTO user_prefs(user_id, music_on, music_level, enhance, music_track, updated_at)
+                  VALUES(?, ?, ?, ?, ?, ?)
                   ON CONFLICT(user_id) DO UPDATE SET music_on = excluded.music_on,
-                    music_level = excluded.music_level, enhance = excluded.enhance, updated_at = excluded.updated_at""",
-               uid, int(cur["music_on"]), cur["music_level"], int(cur["enhance"]), iso(utcnow()))
+                    music_level = excluded.music_level, enhance = excluded.enhance,
+                    music_track = excluded.music_track, updated_at = excluded.updated_at""",
+               uid, int(cur["music_on"]), cur["music_level"], int(cur["enhance"]), cur["music_track"] or "",
+               iso(utcnow()))
         return self.prefs(uid)
 
     # --- личный ключ ElevenLabs ---

@@ -56,9 +56,6 @@ def report_text(report):
                 f"наши — по речи ({report['words']} слов).")
         if report.get("music"):
             text += f"\n🎵 Фоновая музыка: {report['music']} (приглушается, когда говорят)."
-        elif report.get("music_hint"):
-            text += ("\n🎵 Хочешь фоновую музыку? Добавь треки в панели: «Обрезка и субтитры» → "
-                     "«Фоновая музыка».")
         if report.get("enhance"):
             text += "\n✨ Картинка: чуть ярче цвета и резкость; громкость выровнена под YouTube."
         return text
@@ -256,8 +253,9 @@ class CutWorker:
         from .. import music as mu
 
         prefs = self.db.prefs(uid)
-        tracks = mu.tracks(music_dir(self.s, uid))
-        track = mu.pick(tracks) if prefs["music_on"] else None
+        track, title = (await asyncio.get_running_loop().run_in_executor(
+            None, mu.resolve, prefs["music_track"], music_dir(self.s, uid), self.s.data_dir / "music_builtin")
+            if prefs["music_on"] else (None, None))
         tick = asyncio.create_task(ticker())
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
@@ -272,7 +270,7 @@ class CutWorker:
             shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
             Path(job["src_path"]).unlink(missing_ok=True)
         report["kind"] = "subs"
-        report["music_hint"] = bool(prefs["music_on"]) and not tracks
+        report["music"] = title
         await self._deliver(job, msg, out, report, f"🔤 {esc(job['filename'])}")
 
     async def _deliver(self, job, msg, out, report, caption):

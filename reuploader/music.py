@@ -59,3 +59,32 @@ def audio_graph(voice, music, duration, level="mid"):
             # музыка тише, пока звучит голос, и возвращается в паузах
             "[mu][sc]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[md];"
             f"[vo][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{LOUD}[a]")
+
+
+BUILTIN = "builtin:"
+
+
+def builtin_choices():
+    from .music_builtin import PRESETS
+
+    return [{"id": BUILTIN + k, "title": v["title"]} for k, v in PRESETS.items()]
+
+
+def resolve(choice, user_dir, builtin_dir, rnd=random):
+    """Какой трек ставить. choice: "" — случайный из своих (если своих нет — встроенная «весёлая»),
+    "builtin:<имя>" — встроенная мелодия, иначе имя своего трека. -> (путь, название) или (None, None)."""
+    from .music_builtin import PRESETS, ensure
+
+    own = tracks(user_dir)
+    if choice and not choice.startswith(BUILTIN):
+        p = Path(user_dir) / Path(choice).name
+        if p in own:
+            return p, p.name
+        choice = ""                          # выбранный трек удалили — как «случайный»
+    if not choice and own:
+        p = pick(own, rnd)
+        return p, p.name
+    key = choice[len(BUILTIN):] if choice else "fun"
+    if key not in PRESETS:
+        key = "fun"
+    return ensure(builtin_dir, key), PRESETS[key]["title"]

@@ -1025,20 +1025,28 @@ function renderMusic() {
   const box = document.getElementById("musicBox"), m = musicMeta;
   if (!box || !m) return;
   box.innerHTML = `
-    <div class="row"><div class="grow">🎵 Фоновая музыка<div class="sub">случайный трек из твоих; тише, когда говорят</div></div>
+    <div class="row"><div class="grow">🎵 Фоновая музыка<div class="sub">тихо на фоне и ещё тише, когда говорят</div></div>
       <label class="switch"><input type="checkbox" ${m.music_on ? "checked" : ""} onchange="musicPref({music_on: this.checked})"><span></span></label></div>
     ${m.music_on ? `<div class="row"><div class="grow">Громкость музыки</div><div class="seg">${Object.entries(m.levels).map(([k, v]) =>
       `<button class="${m.music_level === k ? "on" : ""}" onclick="musicPref({music_level: '${k}'})">${v}</button>`).join("")}</div></div>` : ""}
     <div class="row"><div class="grow">✨ Улучшить картинку и звук<div class="sub">чуть ярче цвета, резкость, громкость как у YouTube</div></div>
       <label class="switch"><input type="checkbox" ${m.enhance ? "checked" : ""} onchange="musicPref({enhance: this.checked})"><span></span></label></div>
-    ${m.tracks.map(t => `<div class="row"><div class="grow ellipsis" style="min-width:0">🎶 ${esc(t.name)}<div class="sub">${fmtSize(t.size)}</div></div>
-      <button class="ghost" onclick="musicPlay('${encodeURIComponent(t.name)}', this)">▶️</button>
-      <button class="ghost" onclick="musicDelete('${encodeURIComponent(t.name)}')">🗑</button></div>`).join("")}
+    ${m.music_on ? `<div class="row sub" style="padding-bottom:0">Какую мелодию ставить:</div>
+    ${musicRow("", m.tracks.length ? "🎲 Случайный из моих треков" : "🎲 Случайный (своих нет — играет «весёлая»)", "", false)}
+    ${m.builtin.map(b => musicRow(b.id, "🎹 " + b.title, "бот сочинил сам — без Content ID", true)).join("")}` : ""}
+    ${m.tracks.map(t => musicRow(t.name, "🎶 " + t.name, fmtSize(t.size), true, true)).join("")}
     ${m.tracks.length < m.max_tracks ? `<div class="row"><input type="file" id="musicFile" accept="audio/*" class="grow"></div>
       <div class="row"><button class="wide ghost" id="musicUp" onclick="musicUpload()">➕ Добавить трек</button></div>` : ""}
     <div class="hint" style="padding:0 16px 8px">Где брать музыку: YouTube Студия → <b>Фонотека</b> — там треки без Content ID,
       их можно скачать бесплатно. Популярные песни не ставь: YouTube заберёт монетизацию или заблокирует ролик.
       До ${m.max_tracks} треков, каждый до ${m.max_mb} МБ.</div>`;
+}
+function musicRow(id, title, sub, playable, deletable) {
+  const m = musicMeta, on = m.music_on && m.music_track === id, enc = encodeURIComponent(id);
+  return `<div class="row"><div class="grow ellipsis tap" style="min-width:0" onclick="musicPref({music_track: decodeURIComponent('${enc}')})">
+      ${m.music_on ? (on ? "✅ " : "⚪️ ") : ""}${esc(title)}${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>
+    ${playable ? `<button class="ghost" onclick="musicPlay('${enc}', this)">▶️</button>` : ""}
+    ${deletable ? `<button class="ghost" onclick="musicDelete('${enc}')">🗑</button>` : ""}</div>`;
 }
 async function musicPref(body) {
   const d = await guarded(() => api("PATCH", "/api/music", body));

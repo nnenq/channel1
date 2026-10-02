@@ -178,3 +178,92 @@ def test_subs_mode_via_api(worker, captioned):
     strip, status, crop = asyncio.run(go())
     assert strip["status"] == "queued" and strip["mode"] == "subs"           # по умолчанию — стереть
     assert status == 200 and crop["mode"] == "subs_crop"
+
+
+# ---------- фоновая музыка и оформление ----------
+
+@pytest.fixture(scope="module")
+def track(tmp_path_factory):
+    p = tmp_path_factory.mktemp("music") / "calm beat.mp3"
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:sample_rate=44100",
+                    "-t", "30", "-c:a", "libmp3lame", "-b:a", "96k", str(p)], check=True)
+    return p
+
+
+def test_audio_graph_variants():
+    from reuploader import music
+    both = music.audio_graph("0:a", 1, 60, "low")
+    assert "sidechaincompress" in both and "volume=0.1," in both and "afade=t=out:st=58.00" in both
+    assert both.endswith("[a]") and "loudnorm=I=-14" in both
+    assert "sidechain" not in music.audio_graph(None, 1, 30)            # звука нет — только музыка
+    assert music.audio_graph("0:a", None, 30).startswith("[0:a]")       # музыки нет — только выравнивание
+    assert music.audio_graph(None, None, 30) is None
+    assert music.start_offset(30, 60) == 0.0 and 0 <= music.start_offset(200, 60) <= 60
+
+
+def test_music_mixed_into_result(captioned, track, tmp_path):
+    out = tmp_path / "m.mp4"
+    rep = resub.replace_subtitles(captioned, out, lambda p: [Word(0.2, 0.8, "привет")], tmp_path / "w",
+                                  method="strip", music=track, music_level="high")
+    info = probe(out)
+    assert rep["music"] == "calm beat.mp3" and rep["enhance"] and info.audio_streams == 1
+    assert abs(info.duration - 12) < 0.5                                  # трек длиннее — ролик не удлиняется
+    err = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(out), "-af", "ebur128", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    lufs = float(err.split("Integrated loudness:")[1].split("I:")[1].split("LUFS")[0])
+    assert -17 < lufs < -11                                              # громкость выровнена под YouTube
+
+
+def test_music_api_upload_prefs_delete(worker, track):
+    from aiohttp.test_utils import TestClient, TestServer
+    from reuploader.bot.cutjobs import music_dir
+    from reuploader.bot.web import WebApp
+    from tests.test_e2e_helpers import init_data
+    db, s, w, sent = worker
+    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u in (777, 555), app_key="k", cut=w,
+                          stories=SimpleNamespace())
+
+    async def go():
+        async with TestClient(TestServer(WebApp(db, s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
+            h, other = {"X-Init-Data": init_data(777)}, {"X-Init-Data": init_data(555)}
+            r = {"empty": await (await c.get("/api/music", headers=h)).json()}
+            r["bad"] = (await c.put("/api/music?name=virus.exe", data=b"x" * 100, headers=h)).status
+            r["fake"] = (await c.put("/api/music?name=fake.mp3", data=b"x" * 5000, headers=h)).status
+            r["up"] = await (await c.put("/api/music?name=../../calm beat.mp3", data=track.read_bytes(),
+                                         headers=h)).json()
+            r["exists"] = (music_dir(s, 777) / "calm beat.mp3").exists() and not list(music_dir(s, 777).glob("*.part"))
+            r["file"] = (await c.get("/api/music/calm%20beat.mp3", headers=h)).status
+            r["foreign"] = (await c.get("/api/music/calm%20beat.mp3", headers=other)).status
+            r["prefs"] = await (await c.patch("/api/music", json={"music_level": "low", "enhance": False,
+                                                                  "music_level_x": 1}, headers=h)).json()
+            r["del"] = await (await c.delete("/api/music/calm%20beat.mp3", headers=h)).json()
+            return r
+    r = asyncio.run(go())
+    assert r["empty"]["tracks"] == [] and r["empty"]["music_on"] == 1 and r["empty"]["music_level"] == "mid"
+    assert r["bad"] == 400 and r["fake"] == 400
+    assert [t["name"] for t in r["up"]["tracks"]] == ["calm beat.mp3"]                  # имя без «../»
+    assert r["exists"] and not (music_dir(s, 777) / "calm beat.mp3").exists()          # удалён в конце
+    assert r["file"] == 200 and r["foreign"] == 404                                    # чужие треки не видно
+    assert r["prefs"]["music_level"] == "low" and r["prefs"]["enhance"] == 0
+    assert r["del"]["tracks"] == []
+
+
+def test_subs_job_uses_users_music(worker, captioned, track):
+    from reuploader.bot.cutjobs import job_dir, music_dir
+    db, s, w, sent = worker
+
+    def job():
+        jid = db.create_cut_job(777, "krabs.mp4", 1, status="queued")
+        d = job_dir(s, jid)
+        d.mkdir(parents=True)
+        shutil.copy(captioned, d / "src.mp4")
+        db.update_cut_job(jid, src_path=str(d / "src.mp4"), mode="subs_strip")
+        asyncio.run(w.run(db.cut_job(jid)))
+        return db.cut_job(jid)
+    assert job()["status"] == "done" and "Добавь треки в панели" in sent[-1][0]       # треков нет — подсказка
+    music_dir(s, 777).mkdir(parents=True)
+    shutil.copy(track, music_dir(s, 777) / "calm beat.mp3")
+    assert job()["status"] == "done" and "🎵 Фоновая музыка: calm beat.mp3" in sent[-1][0]
+    db.set_prefs(777, music_on=0)
+    job()
+    assert "🎵" not in sent[-1][0]                                                       # музыку выключили

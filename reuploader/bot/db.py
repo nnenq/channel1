@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS user_keys (
     eleven_voice TEXT,
     updated_at TEXT NOT NULL
 );
+-- Настройки оформления роликов пользователя (замена субтитров): фоновая музыка, улучшение картинки
+CREATE TABLE IF NOT EXISTS user_prefs (
+    user_id INTEGER PRIMARY KEY,
+    music_on INTEGER NOT NULL DEFAULT 1,
+    music_level TEXT NOT NULL DEFAULT 'mid',
+    enhance INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
 -- Одноразовые ссылки-приглашения
 CREATE TABLE IF NOT EXISTS invites (
     code TEXT PRIMARY KEY,
@@ -484,6 +492,21 @@ class DB:
 
     def delete_user(self, uid):
         self.x("DELETE FROM users WHERE id = ?", uid)
+
+    # --- оформление роликов ---
+    PREF_DEFAULTS = {"music_on": 1, "music_level": "mid", "enhance": 1}
+
+    def prefs(self, uid):
+        r = self.one("SELECT music_on, music_level, enhance FROM user_prefs WHERE user_id = ?", uid)
+        return dict(r) if r else dict(self.PREF_DEFAULTS)
+
+    def set_prefs(self, uid, **kw):
+        cur = self.prefs(uid) | {k: v for k, v in kw.items() if k in self.PREF_DEFAULTS}
+        self.x("""INSERT INTO user_prefs(user_id, music_on, music_level, enhance, updated_at) VALUES(?, ?, ?, ?, ?)
+                  ON CONFLICT(user_id) DO UPDATE SET music_on = excluded.music_on,
+                    music_level = excluded.music_level, enhance = excluded.enhance, updated_at = excluded.updated_at""",
+               uid, int(cur["music_on"]), cur["music_level"], int(cur["enhance"]), iso(utcnow()))
+        return self.prefs(uid)
 
     # --- личный ключ ElevenLabs ---
     def eleven(self, uid):

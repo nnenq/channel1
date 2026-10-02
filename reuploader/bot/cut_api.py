@@ -8,7 +8,7 @@ from aiohttp import web
 
 from ..smartcut.media import probe
 from ..smartcut.target import fit_params, parse_list, parse_range, target_from_channel, target_from_videos
-from .cutjobs import job_dir, report_text
+from .cutjobs import job_dir, music_dir, report_text
 
 CHUNK = 8 * 1024 * 1024
 SAFE_NAME = re.compile(r"[^\w.\- ()\[\]а-яА-ЯёЁ]+")
@@ -27,6 +27,11 @@ def setup(webapp, router):
     router.add_post("/api/balance/topup", api.add_topup)
     router.add_delete("/api/balance/topup/{tid}", api.delete_topup)
     router.add_get("/dl/{token}", api.download)
+    router.add_get("/api/music", api.music_list)
+    router.add_put("/api/music", api.music_upload)
+    router.add_patch("/api/music", api.music_prefs)
+    router.add_get("/api/music/{name}", api.music_file)
+    router.add_delete("/api/music/{name}", api.music_delete)
     return api
 
 
@@ -178,6 +183,79 @@ class CutApi:
                                mode="ai" if ai else "free", ai_state=None, estimate=None)
         self.w.bot.cut.poke()
         return web.json_response(self._json(self.db.cut_job(job["id"])))
+
+    # --- фоновая музыка (свои треки пользователя) ---
+    def _music_json(self, uid):
+        from .. import music as mu
+
+        items = []
+        for p in mu.tracks(music_dir(self.s, uid)):
+            items.append({"name": p.name, "size": p.stat().st_size})
+        return web.json_response(self.db.prefs(uid) | {"tracks": items, "levels": mu.LEVEL_RU,
+                                                        "max_tracks": mu.MAX_TRACKS, "max_mb": mu.MAX_MB})
+
+    def _track(self, request):
+        from .. import music as mu
+        from .web import ApiError
+
+        name = Path(request.match_info["name"]).name
+        path = music_dir(self.s, request["user"]["id"]) / name
+        if path.suffix.lower() not in mu.AUDIO_EXT or not path.is_file():
+            raise ApiError("Трек не найден.", status=404)
+        return path
+
+    async def music_list(self, request):
+        return self._music_json(request["user"]["id"])
+
+    async def music_upload(self, request):
+        """PUT сырых байтов трека, ?name=файл.mp3."""
+        from .. import music as mu
+        from .web import ApiError
+
+        uid = request["user"]["id"]
+        name = SAFE_NAME.sub("_", Path(request.query.get("name") or "track.mp3").name)[:80]
+        if Path(name).suffix.lower() not in mu.AUDIO_EXT:
+            raise ApiError("Нужен аудиофайл: mp3, m4a, wav, ogg, opus, flac.")
+        d = music_dir(self.s, uid)
+        d.mkdir(parents=True, exist_ok=True)
+        if len(mu.tracks(d)) >= mu.MAX_TRACKS:
+            raise ApiError(f"Не больше {mu.MAX_TRACKS} треков — удали лишние.")
+        dst, tmp = d / name, d / (name + ".part")
+        size = 0
+        try:
+            with open(tmp, "wb") as f:
+                async for part in request.content.iter_chunked(256 * 1024):
+                    size += len(part)
+                    if size > mu.MAX_MB * 1024 * 1024:
+                        raise ApiError(f"Трек больше {mu.MAX_MB} МБ.")
+                    f.write(part)
+            try:
+                info = await asyncio.get_running_loop().run_in_executor(None, probe, tmp)
+            except Exception:  # noqa: BLE001
+                info = None
+            if not info or not info.audio_streams or info.duration < 5:
+                raise ApiError("Это не аудио или трек короче 5 секунд.")
+            tmp.replace(dst)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return self._music_json(uid)
+
+    async def music_file(self, request):
+        return web.FileResponse(self._track(request), headers={"Cache-Control": "private, max-age=3600"})
+
+    async def music_delete(self, request):
+        self._track(request).unlink(missing_ok=True)
+        return self._music_json(request["user"]["id"])
+
+    async def music_prefs(self, request):
+        from .. import music as mu
+
+        body = await request.json()
+        kw = {k: int(bool(body[k])) for k in ("music_on", "enhance") if k in body}
+        if body.get("music_level") in mu.LEVELS:
+            kw["music_level"] = body["music_level"]
+        self.db.set_prefs(request["user"]["id"], **kw)
+        return self._music_json(request["user"]["id"])
 
     async def decide_ai(self, request):
         from .web import ApiError

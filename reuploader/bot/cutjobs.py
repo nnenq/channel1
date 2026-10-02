@@ -45,11 +45,23 @@ SUBS_MODE_RU = {"erase": "старые субтитры стёр (картинк
                 "clean": "старых субтитров не нашёл"}
 
 
+def music_dir(settings, uid):
+    return settings.data_dir / "music" / str(uid)
+
+
 def report_text(report):
     """Отчёт задачи для чата и панели."""
     if report.get("kind") == "subs":
-        return (f"🔤 Субтитры заменены: {SUBS_MODE_RU.get(report['mode'], report['mode'])}; "
+        text = (f"🔤 Субтитры заменены: {SUBS_MODE_RU.get(report['mode'], report['mode'])}; "
                 f"наши — по речи ({report['words']} слов).")
+        if report.get("music"):
+            text += f"\n🎵 Фоновая музыка: {report['music']} (приглушается, когда говорят)."
+        elif report.get("music_hint"):
+            text += ("\n🎵 Хочешь фоновую музыку? Добавь треки в панели: «Обрезка и субтитры» → "
+                     "«Фоновая музыка».")
+        if report.get("enhance"):
+            text += "\n✨ Картинка: чуть ярче цвета и резкость; громкость выровнена под YouTube."
+        return text
     return format_report(report)
 
 
@@ -241,11 +253,16 @@ class CutWorker:
                     await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
 
         out = job_dir(self.s, jid) / "out.mp4"
+        from .. import music as mu
+
+        prefs = self.db.prefs(uid)
+        tracks = mu.tracks(music_dir(self.s, uid))
+        track = mu.pick(tracks) if prefs["music_on"] else None
         tick = asyncio.create_task(ticker())
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
                 replace_subtitles, job["src_path"], out, self.transcriber(jid), job_dir(self.s, jid) / "tmp",
-                progress, SUBS_MODES[job["mode"]]))
+                progress, SUBS_MODES[job["mode"]], track, prefs["music_level"], bool(prefs["enhance"])))
         except Exception as e:  # noqa: BLE001
             log.exception("субтитры %s", jid)
             await self._fail(job, f"{type(e).__name__}: {e}", msg, "заменить субтитры в")
@@ -255,6 +272,7 @@ class CutWorker:
             shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
             Path(job["src_path"]).unlink(missing_ok=True)
         report["kind"] = "subs"
+        report["music_hint"] = bool(prefs["music_on"]) and not tracks
         await self._deliver(job, msg, out, report, f"🔤 {esc(job['filename'])}")
 
     async def _deliver(self, job, msg, out, report, caption):

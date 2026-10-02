@@ -155,7 +155,23 @@ def plan(lay):
     return lay
 
 
-def build_filter(lay, subs_name=None):
+def _tail(subs_name=None, enhance=False):
+    from .music import ENHANCE
+
+    return ("," + ENHANCE if enhance else "") + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
+
+
+def _sound(voice, music_idx, duration, look):
+    """-> (доп. входы ffmpeg, звуковой граф или None). look: music, start, level."""
+    from . import music as mu
+
+    look = look or {}
+    track = look.get("music")
+    graph = mu.audio_graph(voice, music_idx if track else None, duration, look.get("level", "mid"))
+    return (mu.music_input(track, look.get("start", 0.0)) if track else []), graph
+
+
+def build_filter(lay, subs_name=None, enhance=False):
     y0, y1 = lay.keep
     chain = f"[0:v]crop={lay.width // 2 * 2}:{y1 - y0}:0:{y0},setsar=1"
     parts = []
@@ -174,7 +190,7 @@ def build_filter(lay, subs_name=None):
     fc = (chain + f"scale={OUT_W}:-2,split[fg][bg];"
           f"[bg]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,crop={OUT_W}:{OUT_H},"
           "gblur=sigma=40,eq=brightness=-0.06[b];[b][fg]overlay=0:(H-h)/2")
-    return fc + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
+    return fc + _tail(subs_name, enhance)
 
 
 def caption_strip(lay):
@@ -194,7 +210,7 @@ def caption_strip(lay):
     return a // 2 * 2, b // 2 * 2, size
 
 
-def strip_filter(lay, strips, subs_name=None):
+def strip_filter(lay, strips, subs_name=None, enhance=False):
     """Размытые полосы на всю ширину поверх старого текста; размер кадра не меняется."""
     w, h = lay.width // 2 * 2, lay.height // 2 * 2
     chain = f"[0:v]crop={w}:{h}:0:0,setsar=1"
@@ -208,7 +224,7 @@ def strip_filter(lay, strips, subs_name=None):
                       f"[{prev}][b{i}]overlay=0:{a}[m{i}];")
             prev = f"m{i}"
         chain += f"[{prev}]null"
-    return chain + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
+    return chain + _tail(subs_name, enhance)
 
 
 def letters_mask(band, width):
@@ -249,8 +265,9 @@ def erase(band, mask):
     return np.where(mask[..., None] > 0, fill, band)
 
 
-def erase_render(src, out, lay, bands, subs=None, progress=None):
-    """Стирает буквы в полосах bands в каждом кадре и кодирует видео с исходным звуком."""
+def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
+    """Стирает буквы в полосах bands в каждом кадре и кодирует видео с исходным звуком
+    (look — музыка и улучшение картинки, см. replace_subtitles)."""
     try:
         import cv2
     except ImportError:
@@ -264,13 +281,17 @@ def erase_render(src, out, lay, bands, subs=None, progress=None):
     if subs:
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
-    vf = (f"ass={subs_name}," if subs_name else "") + f"crop={w // 2 * 2}:{h // 2 * 2}:0:0,format=yuv420p"
+    fc = f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance"))
+    extra, graph = _sound("1:a" if info.audio_streams else None, 2, info.duration, look)
+    if graph:
+        fc += ";" + graph
     dec = subprocess.Popen([ffmpeg_exe(), "-v", "error", "-i", src, "-an", "-f", "rawvideo", "-pix_fmt", "bgr24",
                             "-vsync", "passthrough", "-"], stdout=subprocess.PIPE)
     enc = subprocess.Popen([ffmpeg_exe(), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                            "-s", f"{w}x{h}", "-r", f"{info.fps:.3f}", "-i", "-", "-i", src,
-                            "-map", "0:v", "-map", "1:a?", "-vf", vf, "-c:v", "libx264", "-preset", "medium",
-                            "-crf", "21", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart",
+                            "-s", f"{w}x{h}", "-r", f"{info.fps:.3f}", "-i", "-", "-i", src, *extra,
+                            "-filter_complex", fc, "-map", "[v]", "-map", "[a]" if graph else "1:a?",
+                            "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-c:a", "aac", "-b:a", "160k",
+                            "-t", f"{info.duration:.3f}", "-movflags", "+faststart",
                             "-map_metadata", "-1", str(out)], stdin=subprocess.PIPE, cwd=cwd)
     done = 0
     try:
@@ -298,7 +319,7 @@ def erase_render(src, out, lay, bands, subs=None, progress=None):
     return out
 
 
-def render(src, out, lay, subs=None, progress=None, strips=None):
+def render(src, out, lay, subs=None, progress=None, strips=None, look=None):
     """strips=None — способ «обрезка» (вертикальное 1080×1920); список полос — способ «полоска»."""
     from . import ffprog
 
@@ -307,17 +328,25 @@ def render(src, out, lay, subs=None, progress=None, strips=None):
     if subs:
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
-    fc = strip_filter(lay, strips, subs_name) if strips is not None else build_filter(lay, subs_name)
-    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", src,
-           "-filter_complex", fc, "-map", "[v]", "-map", "0:a?",
+    enhance = (look or {}).get("enhance")
+    fc = strip_filter(lay, strips, subs_name, enhance) if strips is not None else build_filter(lay, subs_name, enhance)
+    info = probe(src)
+    extra, graph = _sound("0:a" if info.audio_streams else None, 1, info.duration, look)
+    if graph:
+        fc += ";" + graph
+    cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", src, *extra,
+           "-filter_complex", fc, "-map", "[v]", "-map", "[a]" if graph else "0:a?",
            "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-c:a", "aac", "-b:a", "160k",
-           "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
-    ffprog.run(cmd, probe(src).duration, progress, cwd=cwd)
+           "-t", f"{info.duration:.3f}", "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
+    ffprog.run(cmd, info.duration, progress, cwd=cwd)
     return out
 
 
-def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="erase"):
-    """Всё вместе. progress(этап, доля). -> dict для отчёта."""
+def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="erase", music=None,
+                      music_level="mid", enhance=True):
+    """Всё вместе. progress(этап, доля). music — путь к фоновому треку (или None),
+    music_level — low|mid|high, enhance — чуть ярче цвета и резкость. -> dict для отчёта."""
+    from .music import start_offset
     from .subtitles import to_ass
 
     work = Path(work_dir)
@@ -328,9 +357,12 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
     say("распознаю речь", 0.1)
     words = transcriber(src)
     build = lambda f: say("собираю видео", 0.4 + 0.6 * f)   # noqa: E731
+    look = {"enhance": enhance, "level": music_level}
+    if music:
+        look.update(music=str(music), start=start_offset(probe(music).duration, probe(src).duration))
     if method == "crop":
         subs = to_ass(words, OUT_W, OUT_H, work / "subs.ass") if words else None
-        render(src, out, lay, subs, progress=build)
+        render(src, out, lay, subs, progress=build, look=look)
         mode = lay.mode
     elif method == "erase":
         main = caption_strip(lay)
@@ -341,7 +373,7 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
                           margin_v=max(0, round(h - (a + b) / 2 - size * 0.55))) if words else None
         else:
             subs = to_ass(words, w, h, work / "subs.ass") if words else None
-        erase_render(src, out, lay, [(a // 2 * 2, b) for a, b in lay.bands], subs, progress=build)
+        erase_render(src, out, lay, [(a // 2 * 2, b) for a, b in lay.bands], subs, progress=build, look=look)
         mode = "erase" if lay.bands else "clean"
     else:
         main = caption_strip(lay)
@@ -355,7 +387,8 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
                           margin_v=max(0, round(h - (a + b) / 2 - size * 0.55))) if words else None
         else:
             subs = to_ass(words, w, h, work / "subs.ass") if words else None
-        render(src, out, lay, subs, progress=build, strips=sorted(strips))
+        render(src, out, lay, subs, progress=build, strips=sorted(strips), look=look)
         mode = "strip" if main else "clean"
     return {"mode": mode, "method": method, "bands": lay.bands, "content": lay.content, "keep": lay.keep,
-            "words": len(words), "size": [lay.width, lay.height]}
+            "words": len(words), "size": [lay.width, lay.height],
+            "music": Path(music).name if music else None, "enhance": bool(enhance)}

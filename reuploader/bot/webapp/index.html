@@ -1003,12 +1003,73 @@ async function showCut(jid) {
       До ${d.max_mb} МБ и ${d.max_minutes} мин. Видео до 20 МБ можно просто кинуть боту в чат.</div>
     <div id="cutJob">${job ? "" : `<div class="card"><div class="row">
       <input type="file" id="cutFile" accept="video/*" class="grow"></div>
-      <div class="row"><button class="wide" onclick="startUpload()">Загрузить</button></div></div>`}</div>
+      <div class="row"><button class="wide" onclick="startUpload()">Загрузить</button></div></div>
+      <h2>Оформление при замене субтитров</h2><div class="card" id="musicBox"><div class="row sub">загружаю…</div></div>`}</div>
     ${d.jobs.length ? `<h2>Недавние</h2><div class="card">${d.jobs.map(j => `
       <div class="row tap" onclick="location.hash='#cut${j.id}'"><div class="grow" style="min-width:0">
         <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${(j.mode || "").startsWith("subs") ? "🔤 субтитры · " : ""}${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
         <span class="sub">›</span></div>`).join("")}</div>` : ""}`;
-  if (job) renderJob(job);
+  if (job) renderJob(job); else loadMusic();
+}
+
+// ---------- фоновая музыка ----------
+let musicMeta = null, musicAudio = null;
+async function loadMusic() {
+  const d = await api("GET", "/api/music").catch(() => null);
+  if (d) { musicMeta = d; renderMusic(); }
+}
+function renderMusic() {
+  const box = document.getElementById("musicBox"), m = musicMeta;
+  if (!box || !m) return;
+  box.innerHTML = `
+    <div class="row"><div class="grow">🎵 Фоновая музыка<div class="sub">случайный трек из твоих; тише, когда говорят</div></div>
+      <label class="switch"><input type="checkbox" ${m.music_on ? "checked" : ""} onchange="musicPref({music_on: this.checked})"><span></span></label></div>
+    ${m.music_on ? `<div class="row"><div class="grow">Громкость музыки</div><div class="seg">${Object.entries(m.levels).map(([k, v]) =>
+      `<button class="${m.music_level === k ? "on" : ""}" onclick="musicPref({music_level: '${k}'})">${v}</button>`).join("")}</div></div>` : ""}
+    <div class="row"><div class="grow">✨ Улучшить картинку и звук<div class="sub">чуть ярче цвета, резкость, громкость как у YouTube</div></div>
+      <label class="switch"><input type="checkbox" ${m.enhance ? "checked" : ""} onchange="musicPref({enhance: this.checked})"><span></span></label></div>
+    ${m.tracks.map(t => `<div class="row"><div class="grow ellipsis" style="min-width:0">🎶 ${esc(t.name)}<div class="sub">${fmtSize(t.size)}</div></div>
+      <button class="ghost" onclick="musicPlay('${encodeURIComponent(t.name)}', this)">▶️</button>
+      <button class="ghost" onclick="musicDelete('${encodeURIComponent(t.name)}')">🗑</button></div>`).join("")}
+    ${m.tracks.length < m.max_tracks ? `<div class="row"><input type="file" id="musicFile" accept="audio/*" class="grow"></div>
+      <div class="row"><button class="wide ghost" id="musicUp" onclick="musicUpload()">➕ Добавить трек</button></div>` : ""}
+    <div class="hint" style="padding:0 16px 8px">Где брать музыку: YouTube Студия → <b>Фонотека</b> — там треки без Content ID,
+      их можно скачать бесплатно. Популярные песни не ставь: YouTube заберёт монетизацию или заблокирует ролик.
+      До ${m.max_tracks} треков, каждый до ${m.max_mb} МБ.</div>`;
+}
+async function musicPref(body) {
+  const d = await guarded(() => api("PATCH", "/api/music", body));
+  if (d) { musicMeta = d; renderMusic(); }
+}
+async function musicUpload() {
+  const f = document.getElementById("musicFile")?.files[0];
+  if (!f) return alertMsg("Выбери аудиофайл.");
+  if (f.size > musicMeta.max_mb * 1048576) return alertMsg(`Трек больше ${musicMeta.max_mb} МБ.`);
+  const btn = document.getElementById("musicUp");
+  btn.disabled = true; btn.textContent = "⏳ Загружаю…";
+  try {
+    const res = await fetch(`/api/music?name=${encodeURIComponent(f.name)}`, { method: "PUT",
+      headers: { "X-Init-Data": tg?.initData || "" }, body: f });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Ошибка " + res.status);
+    musicMeta = data; haptic("success"); toast("Трек добавлен"); renderMusic();
+  } catch (e) { alertMsg(e.message); btn.disabled = false; btn.textContent = "➕ Добавить трек"; }
+}
+async function musicDelete(name) {
+  if (!await confirmMsg("Удалить трек?")) return;
+  const d = await guarded(() => api("DELETE", `/api/music/${name}`));
+  if (d) { musicMeta = d; renderMusic(); }
+}
+async function musicPlay(name, btn) {
+  if (musicAudio) { musicAudio.pause(); musicAudio = null; document.querySelectorAll("#musicBox button").forEach(b => { if (b.textContent === "⏹") b.textContent = "▶️"; }); if (btn.dataset.on) { delete btn.dataset.on; return; } }
+  try {
+    const res = await fetch(`/api/music/${name}`, { headers: { "X-Init-Data": tg?.initData || "" } });
+    if (!res.ok) throw new Error("Не получилось открыть трек");
+    musicAudio = new Audio(URL.createObjectURL(await res.blob()));
+    btn.textContent = "⏹"; btn.dataset.on = "1";
+    musicAudio.onended = () => { btn.textContent = "▶️"; delete btn.dataset.on; musicAudio = null; };
+    await musicAudio.play();
+  } catch (e) { alertMsg(e.message); }
 }
 
 async function startUpload() {

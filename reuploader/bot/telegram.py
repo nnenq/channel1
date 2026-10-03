@@ -4,6 +4,7 @@ import html
 import logging
 
 import aiohttp
+from pathlib import Path
 
 log = logging.getLogger("tg")
 
@@ -36,19 +37,35 @@ class TG:
             log.warning("не удалось отправить сообщение: %s", e)
 
     async def send_video(self, chat_id, path, caption, width=None, height=None):
+        """Видео в чат. Размер, длительность и картинка-превью берутся из файла: без них Telegram
+        показывает чёрный квадрат вместо кадра, пока видео не скачаешь."""
+        import asyncio
+
+        meta = await asyncio.get_running_loop().run_in_executor(None, video_meta, path)
         form = aiohttp.FormData()
         form.add_field("chat_id", str(chat_id))
         form.add_field("caption", caption[:1024])
         form.add_field("parse_mode", "HTML")
         form.add_field("supports_streaming", "true")
-        if width and height:
-            form.add_field("width", str(width))
-            form.add_field("height", str(height))
-        with open(path, "rb") as f:
-            form.add_field("video", f, filename="short.mp4", content_type="video/mp4")
-            async with self.session.post(self.base + "sendVideo", data=form,
-                                         timeout=aiohttp.ClientTimeout(total=900)) as r:
-                data = await r.json()
+        w, h = width or meta.get("width"), height or meta.get("height")
+        if w and h:
+            form.add_field("width", str(w))
+            form.add_field("height", str(h))
+        if meta.get("duration"):
+            form.add_field("duration", str(int(round(meta["duration"]))))
+        thumb = meta.get("thumb")
+        try:
+            with open(path, "rb") as f:
+                form.add_field("video", f, filename="short.mp4", content_type="video/mp4")
+                if thumb:
+                    form.add_field("thumbnail", Path(thumb).read_bytes(), filename="thumb.jpg",
+                                   content_type="image/jpeg")
+                async with self.session.post(self.base + "sendVideo", data=form,
+                                             timeout=aiohttp.ClientTimeout(total=1800)) as r:
+                    data = await r.json()
+        finally:
+            if thumb:
+                Path(thumb).unlink(missing_ok=True)
         if not data.get("ok"):
             raise RuntimeError(f"Telegram sendVideo: {data.get('description')}")
         return data["result"]
@@ -96,3 +113,26 @@ class TG:
                     await handler(u)
                 except Exception:  # noqa: BLE001
                     log.exception("ошибка обработки апдейта")
+
+
+def video_meta(path):
+    """Ширина, высота, длительность и превью-кадр (JPEG до 320 px, как требует Telegram)."""
+    import subprocess
+
+    from ..ffmpeg_path import ffmpeg_exe
+    from ..smartcut.media import probe
+
+    out = {}
+    try:
+        info = probe(path)
+        out.update(width=info.width, height=info.height, duration=info.duration)
+        thumb = Path(str(path) + ".thumb.jpg")
+        at = min(1.0, max(0.0, (info.duration or 0) / 3))
+        subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-ss", f"{at:.2f}", "-i", str(path), "-frames:v", "1",
+                        "-vf", "scale='if(gt(iw,ih),320,-2)':'if(gt(iw,ih),-2,320)'", "-q:v", "4", str(thumb)],
+                       check=True, timeout=60)
+        if thumb.exists() and thumb.stat().st_size < 200 * 1024:
+            out["thumb"] = str(thumb)
+    except Exception:  # noqa: BLE001 — без превью видео всё равно уйдёт
+        pass
+    return out

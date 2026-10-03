@@ -46,6 +46,12 @@ def probe(path):
         f = re.search(r"([\d.]+) fps", v.group(0)) or re.search(r"([\d.]+) tbr", v.group(0))
         if f:
             fps = float(f.group(1))
+        # видео с телефона (iPhone .mov) хранится «лёжа» с пометкой о повороте; ffmpeg при чтении
+        # поворачивает кадры сам — значит, и размеры должны быть уже повёрнутые
+        rot = re.search(r"displaymatrix: rotation of (-?[\d.]+) degrees", err[v.end():v.end() + 600]) \
+            or re.search(r"rotate\s*:\s*(-?\d+)", err[v.end():v.end() + 600])
+        if rot and round(abs(float(rot.group(1)))) % 180 == 90:
+            width, height = height, width
     audio = re.findall(r"Stream #[^\n]*Audio:[^\n]*", err)
     rate = 48000
     if audio:

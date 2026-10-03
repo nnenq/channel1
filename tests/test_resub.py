@@ -206,7 +206,7 @@ def test_music_mixed_into_result(captioned, track, tmp_path):
     rep = resub.replace_subtitles(captioned, out, lambda p: [Word(0.2, 0.8, "привет")], tmp_path / "w",
                                   method="strip", music=track, music_level="high")
     info = probe(out)
-    assert rep["music"] == "calm beat.mp3" and rep["enhance"] and info.audio_streams == 1
+    assert rep["music"] == "calm beat.mp3" and not rep["enhance"] and info.audio_streams == 1
     assert abs(info.duration - 12) < 0.5                                  # трек длиннее — ролик не удлиняется
     err = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(out), "-af", "ebur128", "-f", "null", "-"],
                          capture_output=True, text=True).stderr
@@ -329,3 +329,50 @@ def test_music_is_actually_audible_under_voice(captioned, tmp_path):
     err = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(mixed), "-af", "ebur128", "-f", "null", "-"],
                          capture_output=True, text=True).stderr
     assert -17 < float(re.findall(r"I:\s+(-?[\d.]+) LUFS", err)[-1]) < -11
+
+
+def test_send_video_has_preview_size_and_duration(captioned, tmp_path):
+    """Регрессия: без превью и размеров Telegram показывал чёрный квадрат вместо видео."""
+    import aiohttp
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+    from reuploader.bot.telegram import TG
+    got = {}
+
+    async def send_video(request):
+        reader = await request.multipart()
+        async for part in reader:
+            data = await part.read()
+            got[part.name] = data if part.name in ("video", "thumbnail") else data.decode()
+        return web.json_response({"ok": True, "result": {"message_id": 5}})
+
+    async def go():
+        app = web.Application(client_max_size=200 * 1024 * 1024)
+        app.router.add_post("/botX/sendVideo", send_video)
+        async with TestServer(app) as srv, aiohttp.ClientSession() as session:
+            tg = TG("X", session)
+            tg.base = str(srv.make_url("/botX/"))
+            video = tmp_path / "v.mp4"
+            shutil.copy(captioned, video)
+            await tg.send_video(1, str(video), "✅ готово")
+            return list(tmp_path.glob("*.thumb.jpg"))
+    left = asyncio.run(go())
+    assert got["width"] == str(W) and got["height"] == str(H) and got["duration"] == "12"
+    assert got["thumbnail"][:2] == b"\xff\xd8" and len(got["thumbnail"]) < 200 * 1024     # JPEG-превью
+    assert len(got["video"]) > 10000 and got["supports_streaming"] == "true" and not left   # превью удалено
+
+
+def test_phone_video_with_rotation_flag(captioned, tmp_path):
+    """Регрессия: видео с iPhone (.mov) хранится «лёжа» с пометкой поворота — размеры и полоса
+    субтитров должны считаться по повёрнутому кадру, иначе картинка ломалась, а субтитры не находились."""
+    land, mov = tmp_path / "land.mp4", tmp_path / "phone.mov"
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(captioned), "-vf", "transpose=1",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "copy", str(land)], check=True)
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-display_rotation", "90", "-i", str(land),
+                    "-c", "copy", str(mov)], check=True)
+    info = probe(mov)
+    assert (info.width, info.height) == (W, H)                      # как его видит зритель
+    assert resub.analyze(mov).bands == resub.analyze(captioned).bands
+    out = tmp_path / "out.mp4"
+    rep = resub.replace_subtitles(mov, out, lambda p: [Word(0.2, 0.8, "привет")], tmp_path / "w")
+    assert rep["mode"] == "erase" and (probe(out).width, probe(out).height) == (W, H)

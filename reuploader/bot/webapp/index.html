@@ -995,6 +995,7 @@ const progressBar = f => `<div style="height:8px;background:var(--sep);border-ra
   <div style="height:100%;width:${Math.round(f * 100)}%;background:var(--accent);transition:width .3s"></div></div>`;
 
 async function showCut(jid) {
+  cutOpen = false;
   const d = await guarded(() => api("GET", "/api/cut"));
   if (!d) return;
   cutMeta = d;
@@ -1029,8 +1030,6 @@ function renderMusic() {
       <label class="switch"><input type="checkbox" ${m.music_on ? "checked" : ""} onchange="musicPref({music_on: this.checked})"><span></span></label></div>
     ${m.music_on ? `<div class="row"><div class="grow">Громкость музыки</div><div class="seg">${Object.entries(m.levels).map(([k, v]) =>
       `<button class="${m.music_level === k ? "on" : ""}" onclick="musicPref({music_level: '${k}'})">${v}</button>`).join("")}</div></div>` : ""}
-    <div class="row"><div class="grow">✨ Улучшить картинку и звук<div class="sub">чуть ярче цвета, резкость, громкость как у YouTube</div></div>
-      <label class="switch"><input type="checkbox" ${m.enhance ? "checked" : ""} onchange="musicPref({enhance: this.checked})"><span></span></label></div>
     ${m.music_on ? `<div class="row sub" style="padding-bottom:0">Какую мелодию ставить:</div>
     ${musicRow("", m.tracks.length ? "🎲 Случайный из моих треков" : "🎲 Случайный (своих нет — играет «весёлая»)", "", false)}
     ${m.builtin.map(b => musicRow(b.id, "🎹 " + b.title, "бот сочинил сам — без Content ID", true)).join("")}` : ""}
@@ -1120,7 +1119,9 @@ async function uploadChunks(jid, file, offset, chunk) {
   if (st) renderJob(st);
 }
 
+let cutOpen = false, cutLast = null;
 function renderJob(j) {
+  cutLast = j;
   const box = document.getElementById("cutJob");
   if (!box) return;
   clearTimeout(cutPoll);
@@ -1134,6 +1135,14 @@ function renderJob(j) {
   if (j.status === "failed") html += `<div class="row sub" style="color:var(--danger)">${esc(j.error || "ошибка")}</div>`;
   if (["uploaded", "failed", "done"].includes(j.status) && j.status !== "done" || (j.status === "done" && !j.report)) {
     html += `
+      <div class="row"><button class="wide" onclick="runSubs(${j.id}, 'erase')">🔤 Стереть субтитры и вставить наши</button></div>
+      <div class="row" style="gap:8px"><button class="ghost grow" onclick="runSubs(${j.id}, 'strip')">Блюр-полоска</button>
+        <button class="ghost grow" onclick="runSubs(${j.id}, 'crop')">Обрезать полосу</button></div>
+      <div class="hint" style="padding:0 16px 8px"><b>Стереть</b> — сотру буквы старых субтитров, картинку под ними
+        дорисую и поставлю наши на то же место. <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой
+        от края до края. <b>Обрезать полосу</b> — вырежу полосу со старым текстом. Длина ролика не меняется.</div>`;
+    html += cutOpen ? `
+      <div class="row"><b>✂️ Обрезать по длине</b></div>
       <div class="row"><div class="seg">
         <button id="tm_manual" class="on" onclick="cutMode('manual')">Вручную</button>
         <button id="tm_channel" onclick="cutMode('channel')">Как на канале</button>
@@ -1141,15 +1150,8 @@ function renderJob(j) {
       <div id="tmBox"></div>
       ${cutMeta?.ai_available ? `<div class="row"><label style="display:flex;gap:8px;align-items:center">
         <input type="checkbox" id="tmAi"> 🤖 AI-анализ Claude (платно — сначала покажу цену)</label></div>` : ""}
-      <div class="row"><button class="wide" onclick="runCut(${j.id})">✂️ Обрезать</button></div>
-      <div class="row"><button class="wide ghost" onclick="runSubs(${j.id}, 'erase')">🔤 Стереть субтитры и вставить наши</button></div>
-      <div class="row" style="gap:8px"><button class="ghost grow" onclick="runSubs(${j.id}, 'strip')">Блюр-полоска</button>
-        <button class="ghost grow" onclick="runSubs(${j.id}, 'crop')">Обрезать полосу</button></div>
-      <div class="hint" style="padding:0 16px 8px"><b>Стереть</b> — сотру буквы старых субтитров, картинку под ними
-        дорисую и поставлю наши анимированные на то же место (кадр не меняется).
-        <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой
-        от края до края и поставлю наши анимированные поверх неё, остальной кадр не трогаю.
-        <b>Обрезать полосу</b> — вырежу полосу со старым текстом и соберу вертикальное 1080×1920 на размытом фоне.</div>`;
+      <div class="row"><button class="wide ghost" onclick="runCut(${j.id})">✂️ Обрезать</button></div>`
+      : `<div class="row"><button class="wide ghost" onclick="cutOpen = true; renderJob(cutLast)">✂️ Обрезать (задать длину)</button></div>`;
   }
   if (j.status === "confirm" && j.estimate) {
     const e = j.estimate;

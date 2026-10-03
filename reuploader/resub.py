@@ -343,7 +343,7 @@ def render(src, out, lay, subs=None, progress=None, strips=None, look=None):
 
 
 def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="erase", music=None,
-                      music_level="mid", enhance=True):
+                      music_level="mid", enhance=False):
     """Всё вместе. progress(этап, доля). music — путь к фоновому треку (или None),
     music_level — low|mid|high, enhance — чуть ярче цвета и резкость. -> dict для отчёта."""
     from .music import start_offset

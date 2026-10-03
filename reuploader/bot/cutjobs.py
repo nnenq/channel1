@@ -81,8 +81,6 @@ def report_text(report):
                 f"наши — по речи ({report['words']} слов).")
         if report.get("music"):
             text += f"\n🎵 Фоновая музыка: {report['music']} (приглушается, когда говорят)."
-        if report.get("enhance"):
-            text += "\n✨ Картинка: чуть ярче цвета и резкость; громкость выровнена под YouTube."
         return text
     return format_report(report)
 
@@ -285,7 +283,7 @@ class CutWorker:
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
                 replace_subtitles, job["src_path"], out, self.transcriber(jid), job_dir(self.s, jid) / "tmp",
-                progress, SUBS_MODES[job["mode"]], track, prefs["music_level"], bool(prefs["enhance"])))
+                progress, SUBS_MODES[job["mode"]], track, prefs["music_level"], False))
         except Exception as e:  # noqa: BLE001
             log.exception("субтитры %s", jid)
             await self._fail(job, f"{type(e).__name__}: {e}", msg, "заменить субтитры в")

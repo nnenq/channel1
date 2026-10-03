@@ -1,7 +1,8 @@
 """Фоновая музыка и «приятный звук» для готовых роликов.
 
-Музыка — свои треки пользователя (папка data/music/<id>/). Кладётся под голос тихо и
-автоматически приглушается, когда говорят (sidechain), в паузах звучит чуть громче.
+Музыка — свои треки пользователя (папка data/music/<id>/) или встроенные мелодии. Голос и трек
+сначала приводятся к одной громкости, потом музыка ставится на заданное число децибел ниже голоса
+и мягко приглушается, когда говорят (sidechain) — слышно, но никогда не громче речи.
 В начале — плавное появление, в конце — затухание. Итоговая громкость выравнивается
 под YouTube (-14 LUFS), чтобы ролик не был тише или громче соседних в ленте.
 
@@ -12,13 +13,15 @@ import random
 from pathlib import Path
 
 AUDIO_EXT = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus", ".flac"}
-LEVELS = {"low": 0.10, "mid": 0.17, "high": 0.26}     # громкость музыки относительно оригинала
+# громкость музыки после выравнивания: под речью примерно на 14 / 11 / 8,5 дБ тише голоса
+LEVELS = {"low": 0.35, "mid": 0.5, "high": 0.7}
 LEVEL_RU = {"low": "тихо", "mid": "средне", "high": "громче"}
 MAX_TRACKS = 20
 MAX_MB = 15
 # лёгкое улучшение картинки: чуть ярче цвета и контраст, немного резкости (до субтитров)
 ENHANCE = "eq=saturation=1.08:contrast=1.03,unsharp=5:5:0.35:5:5:0"
-LOUD = "loudnorm=I=-14:TP=-1.5:LRA=11"
+LOUD = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
+EVEN = "loudnorm=I=-16:TP=-2,aresample=48000"          # общая громкость голоса и трека перед смешиванием
 
 
 def tracks(folder):
@@ -51,13 +54,13 @@ def audio_graph(voice, music, duration, level="mid"):
     end = max(0.0, duration - 2.0)
     if music is None:
         return f"[{voice}]aresample=48000,{LOUD}[a]" if voice else None
-    mus = (f"[{music}:a]aresample=48000,volume={vol},afade=t=in:st=0:d=1.5,"
+    mus = (f"[{music}:a]aresample=48000,{EVEN},volume={vol},afade=t=in:st=0:d=1.5,"
            f"afade=t=out:st={end:.2f}:d=2,atrim=0:{duration:.2f}")
     if not voice:
         return mus + f",{LOUD}[a]"
-    return (f"[{voice}]aresample=48000,asplit=2[vo][sc];{mus}[mu];"
-            # музыка тише, пока звучит голос, и возвращается в паузах
-            "[mu][sc]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=350[md];"
+    return (f"[{voice}]aresample=48000,{EVEN},asplit=2[vo][sc];{mus}[mu];"
+            # музыка чуть тише, пока звучит голос, и возвращается в паузах (мягко — не «проваливается»)
+            "[mu][sc]sidechaincompress=threshold=0.1:ratio=2:attack=20:release=300[md];"
             f"[vo][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{LOUD}[a]")
 
 

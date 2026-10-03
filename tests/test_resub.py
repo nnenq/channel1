@@ -193,7 +193,7 @@ def track(tmp_path_factory):
 def test_audio_graph_variants():
     from reuploader import music
     both = music.audio_graph("0:a", 1, 60, "low")
-    assert "sidechaincompress" in both and "volume=0.1," in both and "afade=t=out:st=58.00" in both
+    assert "sidechaincompress" in both and "volume=0.35," in both and "afade=t=out:st=58.00" in both
     assert both.endswith("[a]") and "loudnorm=I=-14" in both
     assert "sidechain" not in music.audio_graph(None, 1, 30)            # звука нет — только музыка
     assert music.audio_graph("0:a", None, 30).startswith("[0:a]")       # музыки нет — только выравнивание
@@ -299,3 +299,33 @@ def test_resolve_track_choice(tmp_path, track):
     assert music.resolve("builtin:mystery", own, built)[1] == "Встроенная: загадочная"
     assert music.resolve("deleted.mp3", own, built)[1] == "a.mp3"                     # удалённый — случайный
     assert music.resolve("../../etc/passwd", own, built)[1] == "a.mp3"
+
+
+def test_music_is_actually_audible_under_voice(captioned, tmp_path):
+    """Регрессия: раньше музыка оказывалась на 35 дБ тише голоса — её не было слышно."""
+    import re
+
+    import numpy as np
+    from reuploader import music_builtin as mb
+
+    track = mb.ensure(tmp_path / "b", "fun")
+
+    def notes_peak(path):
+        raw = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(path), "-ac", "1", "-ar", "16000",
+                              "-f", "s16le", "-"], capture_output=True).stdout
+        a = np.frombuffer(raw, np.int16) / 32768
+        spec = np.abs(np.fft.rfft(a))
+        f = np.fft.rfftfreq(len(a), 1 / 16000)
+        band = lambda lo, hi: spec[(f > lo) & (f < hi)].sum()          # noqa: E731
+        notes = [130.8, 196.0, 220.0, 174.6, 261.6, 392.0, 523.3]       # аккорды встроенной мелодии
+        return np.mean([band(n - 1.5, n + 1.5) / max(band(n - 12, n - 4) + band(n + 4, n + 12), 1e-9) * 4
+                        for n in notes])
+    plain, mixed = tmp_path / "plain.mp4", tmp_path / "mixed.mp4"
+    resub.replace_subtitles(captioned, plain, lambda p: [], tmp_path / "w1", method="strip")
+    resub.replace_subtitles(captioned, mixed, lambda p: [], tmp_path / "w2", method="strip", music=track,
+                            music_level="low")
+    assert notes_peak(mixed) > 2 * notes_peak(plain)                     # мелодию слышно даже на «тихо»
+    # и она не громче голоса: громкость ролика держится на уровне голоса
+    err = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(mixed), "-af", "ebur128", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    assert -17 < float(re.findall(r"I:\s+(-?[\d.]+) LUFS", err)[-1]) < -11

@@ -1007,7 +1007,7 @@ async function showCut(jid) {
     <div id="cutJob">${job ? "" : `<div class="card"><div class="row">
       <input type="file" id="cutFile" accept="video/*" class="grow"></div>
       <div class="row"><button class="wide" onclick="startUpload()">Загрузить</button></div></div>
-      <h2>Оформление при замене субтитров</h2><div class="card" id="musicBox"><div class="row sub">загружаю…</div></div>`}</div>
+      <h2>Оформление роликов (субтитры и пересказы)</h2><div class="card" id="musicBox"><div class="row sub">загружаю…</div></div>`}</div>
     ${d.jobs.length ? `<h2>Недавние</h2><div class="card">${d.jobs.map(j => `
       <div class="row tap" onclick="location.hash='#cut${j.id}'"><div class="grow" style="min-width:0">
         <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${(j.mode || "").startsWith("subs") ? "🔤 субтитры · " : ""}${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>

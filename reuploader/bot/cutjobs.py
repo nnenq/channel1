@@ -45,6 +45,31 @@ SUBS_MODE_RU = {"erase": "старые субтитры стёр (картинк
                 "clean": "старых субтитров не нашёл"}
 
 
+async def send_video_fit(tg, chat, path, caption):
+    """Шлёт видео в Telegram; если файл больше лимита ботов (50 МБ) — шлёт пережатую копию,
+    оригинал не трогает. -> True, если отправилось."""
+    from ..effects import shrink_to
+    from ..smartcut.media import probe
+
+    path = Path(path)
+    send = path
+    try:
+        if path.stat().st_size > TG_SEND_MAX_MB * 1024 * 1024:
+            send = path.with_name(path.stem + "_tg.mp4")
+            shutil.copyfile(path, send)
+            loop = asyncio.get_running_loop()
+            dur = (await loop.run_in_executor(None, probe, path)).duration
+            await loop.run_in_executor(None, shrink_to, send, TG_SEND_MAX_MB - 2, dur)
+        await tg.send_video(chat, str(send), caption)
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("не смог отправить видео: %s", e)
+        return False
+    finally:
+        if send != path:
+            send.unlink(missing_ok=True)
+
+
 def music_dir(settings, uid):
     return settings.data_dir / "music" / str(uid)
 
@@ -286,20 +311,15 @@ class CutWorker:
             await self._edit(uid, msg["message_id"], f"✅ Готово: «{esc(job['filename'])}»")
         size_mb = out.stat().st_size / 1024 / 1024
         link = f"{self.bot.public_url}/dl/{token}" if self.bot.public_url else None
-        sent = False
-        if size_mb <= TG_SEND_MAX_MB:
-            try:
-                await self.bot.tg.send_video(uid, str(out), caption)
-                sent = True
-            except Exception as e:  # noqa: BLE001
-                log.warning("не смог отправить видео: %s", e)
+        sent = await send_video_fit(self.bot.tg, uid, out, caption)
         tail = ""
-        if not sent and link:
-            tail = (f"\n\n📥 Файл {size_mb:.0f} МБ — больше лимита Telegram, скачай по ссылке "
-                    f"(действует {self.s.cut_link_ttl_h} ч):\n{link}")
+        if link and (not sent or size_mb > TG_SEND_MAX_MB):
+            tail = (f"\n\n📥 Полное качество ({size_mb:.0f} МБ) — по ссылке, действует "
+                    f"{self.s.cut_link_ttl_h} ч:\n{link}")
+        elif not sent:
+            tail = "\n\n📥 Не получилось прислать файл в Telegram — скачай его в панели (кнопка «Скачать»)."
         await self.bot.tg.send(uid, esc(text)[:3900] + tail)
-        if sent:        # отдали — удаляем результат (ссылка ещё 10 минут на всякий случай)
-            self.db.update_cut_job(jid, delete_at=iso(utcnow() + timedelta(minutes=10)))
+        # файл остаётся до конца срока ссылки — его можно скачать из панели и позже
 
     async def _fail(self, job, error, msg, what="обрезать"):
         self.db.update_cut_job(job["id"], status="failed", error=error[:500], finished_at=iso(utcnow()),

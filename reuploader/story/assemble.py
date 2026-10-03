@@ -123,8 +123,11 @@ def build_filter(n, subs_name=None, mirror=False):
     return parts + cat + layout + tail
 
 
-def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=False):
-    """Собирает ролик. clips — [(start, dur)]; voice — запись голоса; subs — .ass (или None)."""
+def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=False, music=None, music_level="mid"):
+    """Собирает ролик. clips — [(start, dur)]; voice — запись голоса; subs — .ass (или None);
+    music — фоновый трек (тише голоса, см. reuploader.music) или None."""
+    from .. import music as mu
+
     src, voice, out = str(Path(src).resolve()), str(Path(voice).resolve()), Path(out).resolve()
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error"]
     for start, dur in clips:
@@ -136,18 +139,25 @@ def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=Fals
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
     n = len(clips)
-    fc = build_filter(n, subs_name, mirror) + f";[{n}:a]loudnorm=I=-15:TP=-1.5:LRA=11,aresample=48000[a]"
+    total = sum(d for _, d in clips)
+    if music:
+        cmd += mu.music_input(music, mu.start_offset(probe(music).duration, total))
+        sound = mu.audio_graph(f"{n}:a", n + 1, total, music_level)
+    else:
+        sound = f"[{n}:a]loudnorm=I=-15:TP=-1.5:LRA=11,aresample=48000[a]"
+    fc = build_filter(n, subs_name, mirror) + ";" + sound
     cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
             "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart",
             "-map_metadata", "-1", str(out)]
     from .. import ffprog
 
-    ffprog.run(cmd, sum(d for _, d in clips), progress, cwd=cwd)
+    ffprog.run(cmd, total, progress, cwd=cwd)
     return out
 
 
-def build_story(src, voice, script, out, transcriber, work_dir, progress=None, fast_cuts=True, mirror=False):
+def build_story(src, voice, script, out, transcriber, work_dir, progress=None, fast_cuts=True, mirror=False,
+                music=None, music_level="mid"):
     """Всё вместе. -> dict(duration, lines, words) для отчёта.
     progress(этап, доля 0..1) — распознавание голоса 0–35 %, сборка видео 35–100 %."""
     from ..subtitles import to_ass
@@ -177,7 +187,7 @@ def build_story(src, voice, script, out, transcriber, work_dir, progress=None, f
     clips = plan_clips(lines, spans, probe(src).duration, cuts if fast_cuts else None)
     subs = to_ass(words, W, H, work / "story.ass", overlay=script.get("overlay") or None,
                   overlay_until=vinfo.duration)
-    render(src, voice, clips, out, subs, mirror=mirror,
+    render(src, voice, clips, out, subs, mirror=mirror, music=music, music_level=music_level,
            progress=(lambda f: progress("собираю видео", 0.35 + 0.65 * f)) if progress else None)
     return {"duration": round(vinfo.duration, 1), "lines": len(lines), "words": len(words),
             "spans": spans, "clips": clips}

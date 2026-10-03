@@ -297,10 +297,17 @@ class StoryWorker:
                                                          f"своим голосовым.")
                 return
             self.db.update_story_script(item["id"], voice_path=voice_path)
+        from .. import music as mu
+        from .cutjobs import music_dir, send_video_fit
+
+        prefs = self.db.prefs(story["user_id"])
+        track, track_title = (await asyncio.get_running_loop().run_in_executor(
+            None, mu.resolve, prefs["music_track"], music_dir(self.s, story["user_id"]), self.s.data_dir / "music_builtin")
+            if prefs["music_on"] else (None, None))
         try:
             await asyncio.get_running_loop().run_in_executor(None, partial(
                 build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}", build_rep,
-                mirror=bool(story["mirror"])))
+                mirror=bool(story["mirror"]), music=track, music_level=prefs["music_level"]))
         except Exception as e:  # noqa: BLE001
             log.exception("сборка %s", item["id"])
             self.db.update_story_script(item["id"], status="failed", error=f"{type(e).__name__}: {e}"[:500])
@@ -312,16 +319,16 @@ class StoryWorker:
         token = secrets.token_urlsafe(24)
         self.db.update_story_script(item["id"], status="done", out_path=str(out), dl_token=token, progress=1,
                                     finished_at=iso(utcnow()))
-        caption = f"✅ <b>{esc(body['title'])}</b>\nНазвание для YouTube можно взять это же."
-        sent = False
-        if out.stat().st_size <= TG_SEND_MAX_MB * 1024 * 1024:
-            try:
-                await self.bot.tg.send_video(story["user_id"], str(out), caption, 1080, 1920)
-                sent = True
-            except Exception as e:  # noqa: BLE001
-                log.warning("не смог отправить ролик: %s", e)
-        if not sent and self.bot.public_url:
-            await self.bot.tg.send(story["user_id"], caption + f"\n📥 {self.bot.public_url}/sdl/{token}")
+        caption = (f"✅ <b>{esc(body['title'])}</b>\nНазвание для YouTube можно взять это же."
+                   + (f"\n🎵 Музыка: {esc(track_title)}" if track_title else ""))
+        sent = await send_video_fit(self.bot.tg, story["user_id"], out, caption)
+        big = out.stat().st_size > TG_SEND_MAX_MB * 1024 * 1024
+        if (big or not sent) and self.bot.public_url:
+            await self.bot.tg.send(story["user_id"], ("📥 Полное качество" if sent else caption + "\n📥 Скачать")
+                                   + f": {self.bot.public_url}/sdl/{token}")
+        elif not sent:
+            await self.bot.tg.send(story["user_id"], caption + "\n📥 Не получилось прислать файл — скачай его "
+                                                               "в панели («Пересказы и теории» → «Скачать ролик»).")
 
 
 # ---------------- API мини-апки ----------------

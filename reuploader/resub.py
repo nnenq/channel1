@@ -44,13 +44,32 @@ class Layout:
         return "blur" if self.blur else ("crop" if self.keep != self.content else "clean")
 
 
+# HDR с iPhone -> обычные цвета (SDR, BT.709); без этого картинка блёклая или серая
+TONEMAP = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,"
+           "zscale=t=bt709:m=bt709:r=tv,format=yuv420p,")
+# готовое видео всегда помечено как обычное SDR — иначе телефон может показать его серым
+SDR_TAGS = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"]
+
+
+def check_video(path):
+    """Готовый файл должен содержать картинку, а не только звук."""
+    info = probe(path)
+    if not info.width or not info.height:
+        raise RuntimeError("в готовом файле нет картинки — видео не отправляю")
+
+
+def pre(info):
+    """Начало видеофильтра для исходника."""
+    return TONEMAP if info.hdr else ""
+
+
 def _frames(src, every=1 / SCAN_FPS, limit=240):
     info = probe(src)
     w, h = info.width, info.height
     sh = max(2, int(round(SCAN_W * h / w / 2)) * 2)
     fps = 1 / max(every, info.duration / limit) if info.duration else 1 / every
     raw = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(src), "-an", "-vf",
-                          f"fps={fps:.4f},scale={SCAN_W}:{sh}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                          f"{pre(info)}fps={fps:.4f},scale={SCAN_W}:{sh}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
                          capture_output=True, check=True).stdout
     n = len(raw) // (SCAN_W * sh * 3)
     return w, h, np.frombuffer(raw[: n * SCAN_W * sh * 3], np.uint8).reshape(n, sh, SCAN_W, 3)
@@ -158,7 +177,8 @@ def plan(lay):
 def _tail(subs_name=None, enhance=False):
     from .music import ENHANCE
 
-    return ("," + ENHANCE if enhance else "") + (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
+    return (("," + ENHANCE if enhance else "") + (f",ass={subs_name}" if subs_name else "")
+            + ",setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p[v]")
 
 
 def _sound(voice, music_idx, duration, look):
@@ -171,9 +191,9 @@ def _sound(voice, music_idx, duration, look):
     return (mu.music_input(track, look.get("start", 0.0)) if track else []), graph
 
 
-def build_filter(lay, subs_name=None, enhance=False):
+def build_filter(lay, subs_name=None, enhance=False, head=""):
     y0, y1 = lay.keep
-    chain = f"[0:v]crop={lay.width // 2 * 2}:{y1 - y0}:0:{y0},setsar=1"
+    chain = f"[0:v]{head}crop={lay.width // 2 * 2}:{y1 - y0}:0:{y0},setsar=1"
     parts = []
     if lay.blur:
         n = len(lay.blur)
@@ -210,10 +230,10 @@ def caption_strip(lay):
     return a // 2 * 2, b // 2 * 2, size
 
 
-def strip_filter(lay, strips, subs_name=None, enhance=False):
+def strip_filter(lay, strips, subs_name=None, enhance=False, head=""):
     """Размытые полосы на всю ширину поверх старого текста; размер кадра не меняется."""
     w, h = lay.width // 2 * 2, lay.height // 2 * 2
-    chain = f"[0:v]crop={w}:{h}:0:0,setsar=1"
+    chain = f"[0:v]{head}crop={w}:{h}:0:0,setsar=1"
     if strips:
         n = len(strips)
         chain += f",split={n + 1}[base]" + "".join(f"[s{i}]" for i in range(n)) + ";"
@@ -275,7 +295,7 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
     info = probe(src)
     w, h = lay.width, lay.height
     frame_size = w * h * 3
-    total = max(1, int(info.duration * info.fps))
+    total = max(1, int(info.duration * min(60.0, info.fps or 30.0)))
     src, out = str(Path(src).resolve()), Path(out).resolve()
     cwd = subs_name = None
     if subs:
@@ -285,13 +305,16 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
     extra, graph = _sound("1:a" if info.audio_streams else None, 2, info.duration, look)
     if graph:
         fc += ";" + graph
-    dec = subprocess.Popen([ffmpeg_exe(), "-v", "error", "-i", src, "-an", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                            "-vsync", "passthrough", "-"], stdout=subprocess.PIPE)
+    # ровная частота кадров: видео с телефона часто «плавающее» (VFR) — иначе картинка уезжает от звука
+    fps = min(60.0, info.fps or 30.0)
+    dec = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-v", "error", "-i", src, "-an", "-vf", f"{pre(info)}fps={fps:.3f}",
+                            "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE)
     enc = subprocess.Popen([ffmpeg_exe(), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                            "-s", f"{w}x{h}", "-r", f"{info.fps:.3f}", "-i", "-", "-i", src, *extra,
+                            "-s", f"{w}x{h}", "-r", f"{fps:.3f}", "-i", "-", "-i", src, *extra,
                             "-filter_complex", fc, "-map", "[v]", "-map", "[a]" if graph else "1:a?",
                             "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-c:a", "aac", "-b:a", "160k",
-                            "-t", f"{info.duration:.3f}", "-movflags", "+faststart",
+                            "-t", f"{info.duration:.3f}", "-movflags", "+faststart", *SDR_TAGS,
                             "-map_metadata", "-1", str(out)], stdin=subprocess.PIPE, cwd=cwd)
     done = 0
     try:
@@ -312,8 +335,11 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
     finally:
         enc.stdin.close()
         dec.stdout.close()
+        dec_err = dec.stderr.read().decode("utf-8", "replace").strip()
         dec.wait()
         enc.wait()
+    if not done:      # кадры не прочитались — не отдаём «видео» без картинки
+        raise RuntimeError("не удалось прочитать кадры видео" + (f": {dec_err[-300:]}" if dec_err else ""))
     if enc.returncode != 0 or not out.exists():
         raise RuntimeError("ffmpeg не смог собрать видео")
     return out
@@ -329,15 +355,16 @@ def render(src, out, lay, subs=None, progress=None, strips=None, look=None):
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
     enhance = (look or {}).get("enhance")
-    fc = strip_filter(lay, strips, subs_name, enhance) if strips is not None else build_filter(lay, subs_name, enhance)
     info = probe(src)
+    fc = (strip_filter(lay, strips, subs_name, enhance, pre(info)) if strips is not None
+          else build_filter(lay, subs_name, enhance, pre(info)))
     extra, graph = _sound("0:a" if info.audio_streams else None, 1, info.duration, look)
     if graph:
         fc += ";" + graph
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", src, *extra,
            "-filter_complex", fc, "-map", "[v]", "-map", "[a]" if graph else "0:a?",
            "-c:v", "libx264", "-preset", "medium", "-crf", "21", "-c:a", "aac", "-b:a", "160k",
-           "-t", f"{info.duration:.3f}", "-movflags", "+faststart", "-map_metadata", "-1", str(out)]
+           "-t", f"{info.duration:.3f}", "-movflags", "+faststart", *SDR_TAGS, "-map_metadata", "-1", str(out)]
     ffprog.run(cmd, info.duration, progress, cwd=cwd)
     return out
 
@@ -389,6 +416,7 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
             subs = to_ass(words, w, h, work / "subs.ass") if words else None
         render(src, out, lay, subs, progress=build, strips=sorted(strips), look=look)
         mode = "strip" if main else "clean"
+    check_video(out)
     return {"mode": mode, "method": method, "bands": lay.bands, "content": lay.content, "keep": lay.keep,
             "words": len(words), "size": [lay.width, lay.height],
             "music": Path(music).name if music else None, "enhance": bool(enhance)}

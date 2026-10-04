@@ -20,6 +20,7 @@ class MediaInfo:
     fps: float
     audio_streams: int
     audio_rate: int
+    hdr: bool = False          # HDR (iPhone снимает в HLG): нужно перевести в обычные цвета
 
 
 def run_ffmpeg(args, check=True):
@@ -57,7 +58,8 @@ def probe(path):
     if audio:
         r = re.search(r"(\d{4,6}) Hz", audio[0])
         rate = int(r.group(1)) if r else rate
-    return MediaInfo(duration, width, height, fps, len(audio), rate)
+    hdr = bool(v and re.search(r"arib-std-b67|smpte2084", v.group(0)))
+    return MediaInfo(duration, width, height, fps, len(audio), rate, hdr)
 
 
 def load_audio(path, work_dir, sr=SR):

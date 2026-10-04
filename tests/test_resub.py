@@ -376,3 +376,31 @@ def test_phone_video_with_rotation_flag(captioned, tmp_path):
     out = tmp_path / "out.mp4"
     rep = resub.replace_subtitles(mov, out, lambda p: [Word(0.2, 0.8, "привет")], tmp_path / "w")
     assert rep["mode"] == "erase" and (probe(out).width, probe(out).height) == (W, H)
+
+
+def test_no_ffmpeg_options_removed_in_new_versions():
+    """Регрессия: в новом ffmpeg нет опции -vsync — из-за неё бот присылал видео без картинки."""
+    from pathlib import Path
+    root = Path(resub.__file__).parent
+    bad = [str(p.relative_to(root)) for p in root.rglob("*.py") if '"-vsync"' in p.read_text(encoding="utf-8")]
+    assert bad == []
+
+
+def test_iphone_hdr_and_variable_fps(captioned, tmp_path):
+    """HDR (HLG) с iPhone -> обычные цвета с пометкой BT.709; «плавающая» частота кадров не ломает видео."""
+    hdr, vfr = tmp_path / "hdr.mov", tmp_path / "vfr.mp4"
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(captioned), "-vf", "format=yuv420p10le",
+                    "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error",
+                    "-color_primaries", "bt2020", "-color_trc", "arib-std-b67", "-colorspace", "bt2020nc",
+                    "-c:a", "aac", str(hdr)], check=True)
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(captioned), "-vf",
+                    "select='lt(n\\,30)+not(mod(n\\,4))'", "-fps_mode", "vfr", "-c:v", "libx264",
+                    "-preset", "ultrafast", "-c:a", "aac", str(vfr)], check=True)
+    assert probe(hdr).hdr and not probe(captioned).hdr
+    for src in (hdr, vfr):
+        for method in ("erase", "strip"):
+            out = tmp_path / f"{src.stem}_{method}.mp4"
+            resub.replace_subtitles(src, out, lambda p: [Word(0.2, 0.8, "привет")], tmp_path / "w", method=method)
+            head = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(out)], capture_output=True, text=True).stderr
+            assert "bt709" in head and "arib" not in head                 # обычные цвета, без HDR-пометки
+            assert abs(probe(out).duration - 12) < 0.5 and probe(out).height == H

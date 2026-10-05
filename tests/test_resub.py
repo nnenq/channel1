@@ -466,3 +466,29 @@ def test_erase_leaves_no_flashes_of_old_captions(tmp_path, outline, border):
         still = text[i] & (np.abs(O[i] - B[i]) < 25) & (np.abs(O[i] - C[i]) > 60)
         left.append(still.sum() / text[i].sum())
     assert left and max(left) < 0.03, f"в худшем кадре осталось {max(left):.1%} старых букв"
+
+
+def test_two_line_captions_are_erased(tmp_path):
+    """Регрессия: фраза в две строки — верхняя строка выше обычной полосы и раньше оставалась."""
+    import numpy as np
+    clean, burned = _hard_captions(tmp_path)
+    ass = (tmp_path / "old.ass").read_text(encoding="utf-8")
+    # редкие события — в две строки (\N), как у длинных фраз
+    lines = ass.splitlines()
+    ev = [i for i, ln in enumerate(lines) if ln.startswith("Dialogue:")]
+    for k in ev[2::7]:
+        lines[k] = lines[k].replace("{\\r} ", "{\\r}\\N", 1) if "{\\r} " in lines[k] else lines[k].replace(" ", "\\N", 1)
+    (tmp_path / "old.ass").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(clean), "-vf", "ass=old.ass", "-c:v", "libx264",
+                    "-preset", "ultrafast", "-crf", "16", "-c:a", "copy", str(burned)], check=True, cwd=tmp_path)
+    out = tmp_path / "out.mp4"
+    resub.replace_subtitles(burned, out, lambda p: [], tmp_path / "w", method="erase")
+    C, B, O = _gray_frames(clean), _gray_frames(burned), _gray_frames(out)
+    n = min(len(C), len(B), len(O))
+    worst = 0
+    for i in range(n):
+        text = np.abs(B[i] - C[i]) > 60
+        if text.sum() >= 50:
+            still = text & (np.abs(O[i] - B[i]) < 25) & (np.abs(O[i] - C[i]) > 60)
+            worst = max(worst, still.sum() / text.sum())
+    assert worst < 0.03, f"в худшем кадре осталось {worst:.1%} старых букв"

@@ -297,11 +297,38 @@ def letters_mask(band, width, geo=None, line=True):
         n, lab, st, ok = _components(band, width, 110, 0.45, contrast=True)
         hh = st[:, 3]
         cy = st[:, 1] + hh / 2
-        ok &= (hh >= 0.5 * hlo) & (hh <= 1.3 * hhi) & (np.abs(cy - cy0) <= max(0.6 * hhi, 2.5 * spread))
+        # высота — как у букв субтитров (с запасом на «выскакивающее» слово), строка — основная или
+        # соседняя сверху/снизу (длинная фраза переносится на две строки)
+        ok &= (hh >= 0.5 * hlo) & (hh <= 1.6 * hhi) & (np.abs(cy - cy0) <= max(1.7 * hhi, 2.5 * spread))
+        if ok.any():
+            # остатки текста рядом со строкой (полустёртые буквы прошлой замены субтитров, края
+            # «выскакивающего» слова) — светлые пятна размером с букву, касающиеся найденного текста
+            import cv2
+
+            near = cv2.dilate(ok[lab].astype(np.uint8),
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(hhi) | 1, int(hhi) | 1)))
+            touch = np.bincount(lab[near > 0], minlength=n) > 0
+            ok |= touch & (st[:, 4] >= 15) & (hh <= 1.6 * hhi) & (st[:, 2] <= 0.25 * width)
+            ok[0] = False
     else:
         n, lab, st, ok = _components(band, width)
         ok &= st[:, 3] <= 0.9 * band.shape[0]
     return _finish(ok[lab].astype(np.uint8), width, int(ok.sum()), line)
+
+
+def widen(bands, geos, height):
+    """Расширяет полосы на строку вверх и вниз — для субтитров в две строки. -> (полосы, геометрии)."""
+    out_b, out_g = [], []
+    for (a, b), g in zip(bands, geos):
+        if not g:
+            out_b.append((a, b))
+            out_g.append(g)
+            continue
+        d = round(1.6 * g[1])
+        na, nb = max(0, (a - d) // 2 * 2), min(height, b + d)
+        out_b.append((na, nb))
+        out_g.append((g[0], g[1], g[2] + (a - na), g[3]))
+    return out_b, out_g
 
 
 def learn_geometry(src, info, bands, width, height, samples=160):
@@ -369,6 +396,7 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
         cwd, subs_name = subs.parent, subs.name
     fc = f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance"))
     geos = learn_geometry(src, info, bands, w, h) if bands else []
+    bands, geos = widen(bands, geos, h)
     extra, graph = _sound("1:a" if info.audio_streams else None, 2, info.duration, look)
     if graph:
         fc += ";" + graph

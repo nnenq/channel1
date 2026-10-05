@@ -247,30 +247,96 @@ def strip_filter(lay, strips, subs_name=None, enhance=False, head=""):
     return chain + _tail(subs_name, enhance)
 
 
-def letters_mask(band, width):
-    """Маска букв в полосе кадра (BGR): светлые пятна, почти целиком обведённые тёмным,
-    вместе с обводкой и тенью. -> uint8 0/1."""
+def _components(band, width, dark_thr=90, frac=0.55, contrast=False):
+    """Светлые пятна полосы и признак «обведено тёмным» для каждого. -> (n, lab, stats, outlined)."""
     import cv2
 
     im = band.astype(np.int16)
-    b, g, r = im[..., 0], im[..., 1], im[..., 2]
-    bright = ((r > 185) & (g > 165)).astype(np.uint8)        # белые и жёлтые буквы
-    dark = (im.max(2) < 90).astype(np.uint8)
+    bright = ((im[..., 2] > 185) & (im[..., 1] > 165)).astype(np.uint8)        # белые и жёлтые буквы
+    dark = (im.max(2) < dark_thr).astype(np.uint8)
     n, lab, st, _ = cv2.connectedComponentsWithStats(bright, 8, cv2.CV_32S)
     if n <= 1:
-        return np.zeros_like(bright)
+        return n, lab, st, np.zeros(n, bool)
     # кольцо вокруг каждого пятна: соседние пиксели получают номер пятна (максимум по соседям)
     grown = cv2.dilate(lab.astype(np.float32), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))).astype(np.int32)
     ring = (bright == 0) & (grown > 0)
     total = np.bincount(grown[ring], minlength=n)
     darkn = np.bincount(grown[ring & (dark == 1)], minlength=n)
-    area, h, w = st[:, cv2.CC_STAT_AREA], st[:, cv2.CC_STAT_HEIGHT], st[:, cv2.CC_STAT_WIDTH]
-    good = (area >= 15) & (h <= 0.9 * band.shape[0]) & (w <= 0.25 * width) & (total > 0) \
-        & (darkn >= 0.55 * np.maximum(total, 1))
-    good[0] = False
-    letters = good[lab].astype(np.uint8)
+    outlined = darkn >= frac * np.maximum(total, 1)
+    if contrast:      # обводка не чёрная, а просто заметно темнее буквы (серая, полупрозрачная тень)
+        luma = im[..., 0] * 0.11 + im[..., 1] * 0.59 + im[..., 2] * 0.30
+        ring_l = np.bincount(grown[ring], weights=luma[ring], minlength=n) / np.maximum(total, 1)
+        in_l = np.bincount(lab.ravel(), weights=luma.ravel(), minlength=n) / np.maximum(st[:, 4], 1)
+        outlined |= (ring_l < 0.45 * in_l) & (darkn >= 0.25 * total)
+    ok = (st[:, 4] >= 15) & (st[:, 2] <= 0.25 * width) & (total > 0) & outlined
+    ok[0] = False
+    return n, lab, st, ok
+
+
+def _finish(letters, width, count, line=True):
+    import cv2
+
     rad = max(4, round(width * 0.011))
-    return cv2.dilate(letters, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1, 2 * rad + 1)))
+    mask = cv2.dilate(letters, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * rad + 1, 2 * rad + 1)))
+    if line and count >= 2:
+        # промежутки между буквами и словами одной строки тоже стираем (не дальше ~7 % ширины кадра):
+        # если какую-то букву не узнали, она не «мигает»
+        k = cv2.getStructuringElement(cv2.MORPH_RECT, (max(9, round(width * 0.07)) | 1, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    return mask
+
+
+def letters_mask(band, width, geo=None, line=True):
+    """Маска старых субтитров в полосе кадра (BGR). -> uint8 0/1.
+
+    Буква — светлое (белое/жёлтое) пятно, почти целиком обведённое тёмным. geo — выученная по ролику
+    геометрия строки (высота букв и где строка, см. learn_geometry): с ней узнаются и буквы с серой/
+    тонкой обводкой, а пятна другого размера (жёлтый Губка Боб) не трогаются."""
+    if geo:
+        hlo, hhi, cy0, spread = geo
+        n, lab, st, ok = _components(band, width, 110, 0.45, contrast=True)
+        hh = st[:, 3]
+        cy = st[:, 1] + hh / 2
+        ok &= (hh >= 0.5 * hlo) & (hh <= 1.3 * hhi) & (np.abs(cy - cy0) <= max(0.6 * hhi, 2.5 * spread))
+    else:
+        n, lab, st, ok = _components(band, width)
+        ok &= st[:, 3] <= 0.9 * band.shape[0]
+    return _finish(ok[lab].astype(np.uint8), width, int(ok.sum()), line)
+
+
+def learn_geometry(src, info, bands, width, height, samples=160):
+    """Высота букв и положение строки старых субтитров в каждой полосе — по уверенным кадрам
+    (где в ряд стоят хотя бы 2 буквы одной высоты). -> [geo | None] по полосам."""
+    fps = min(4.0, samples / max(info.duration, 1))
+    p = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-v", "error", "-i", str(src), "-an",
+                          "-vf", f"{pre(info)}fps={fps:.3f}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+                         stdout=subprocess.PIPE)
+    stats = [([], []) for _ in bands]
+    size = width * height * 3
+    try:
+        while True:
+            buf = p.stdout.read(size)
+            if len(buf) < size:
+                break
+            frame = np.frombuffer(buf, np.uint8).reshape(height, width, 3)
+            for (a, b), (hs, cys) in zip(bands, stats):
+                n, lab, st, ok = _components(frame[a:b], width)
+                idx = np.where(ok & (st[:, 3] <= 0.9 * (b - a)))[0]
+                cy, hh, cx = st[idx, 1] + st[idx, 3] / 2, st[idx, 3], st[idx, 0] + st[idx, 2] / 2
+                for i in range(len(idx)):
+                    same = (np.abs(cy - cy[i]) < 0.35 * np.maximum(hh, hh[i])) & (hh > 0.5 * hh[i]) \
+                        & (hh < 2 * hh[i]) & (np.abs(cx - cx[i]) < 4 * np.maximum(hh, hh[i]))
+                    if same.sum() >= 3:
+                        hs.append(hh[i])
+                        cys.append(cy[i])
+    finally:
+        p.stdout.close()
+        p.wait()
+    out = []
+    for hs, cys in stats:
+        out.append((float(np.percentile(hs, 25)), float(np.percentile(hs, 90)), float(np.median(cys)),
+                    float(np.std(cys))) if len(hs) >= 30 else None)
+    return out
 
 
 def erase(band, mask):
@@ -302,6 +368,7 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
     fc = f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance"))
+    geos = learn_geometry(src, info, bands, w, h) if bands else []
     extra, graph = _sound("1:a" if info.audio_streams else None, 2, info.duration, look)
     if graph:
         fc += ";" + graph
@@ -317,21 +384,35 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
                             "-t", f"{info.duration:.3f}", "-movflags", "+faststart", *SDR_TAGS,
                             "-map_metadata", "-1", str(out)], stdin=subprocess.PIPE, cwd=cwd)
     done = 0
+    window = {}                 # номер кадра -> (кадр, маски полос). Маска кадра — объединение масок
+    reach = 2                   # ±2 соседних кадров: буква, не узнанная в одном кадре, всё равно стирается
+    next_out = 0
+
+    def emit(j):
+        frame = window[j][0].copy()
+        for k, (a, b) in enumerate(bands):
+            mask = np.maximum.reduce([window[i][1][k] for i in range(j - reach, j + reach + 1) if i in window])
+            if mask.any():
+                frame[a:b] = erase(frame[a:b], mask)
+        enc.stdin.write(frame.tobytes())
+
     try:
         while True:
             buf = dec.stdout.read(frame_size)
             if len(buf) < frame_size:
                 break
-            frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3).copy()
-            for a, b in bands:
-                band = frame[a:b]
-                mask = letters_mask(band, w)
-                if mask.any():
-                    frame[a:b] = erase(band, mask)
-            enc.stdin.write(frame.tobytes())
+            frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
+            window[done] = (frame, [letters_mask(frame[a:b], w, g) for (a, b), g in zip(bands, geos)])
+            while next_out + reach <= done:
+                emit(next_out)
+                next_out += 1
+                window.pop(next_out - reach - 1, None)
             done += 1
             if progress and done % 15 == 0:
                 progress(min(1.0, done / total))
+        while next_out < done:                                       # хвост ролика
+            emit(next_out)
+            next_out += 1
     finally:
         enc.stdin.close()
         dec.stdout.close()

@@ -404,3 +404,65 @@ def test_iphone_hdr_and_variable_fps(captioned, tmp_path):
             head = subprocess.run([ffmpeg_exe(), "-hide_banner", "-i", str(out)], capture_output=True, text=True).stderr
             assert "bt709" in head and "arib" not in head                 # обычные цвета, без HDR-пометки
             assert abs(probe(out).duration - 12) < 0.5 and probe(out).height == H
+
+
+def _hard_captions(tmp_path, outline="&H00000000", border=4):
+    """Чистое видео + то же видео со вшитыми субтитрами (слово за словом, жёлтое выделение)."""
+    clean, burned, ass = tmp_path / "clean.mp4", tmp_path / "burned.mp4", tmp_path / "old.ass"
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-f", "lavfi", "-i",
+                    f"life=s={W}x{H}:r=25:ratio=0.4:mold=8:life_color=#3aa0ff:death_color=#204020:mold_color=#c06030",
+                    "-f", "lavfi", "-i", "sine=f=300:sample_rate=44100", "-t", "10",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-c:a", "aac", "-shortest", str(clean)],
+                   check=True)
+    words = "SQUIDWARD COVERED HIS ENTIRE BODY IN CEMENT JUST TO HIDE HIMSELF THEN HE ACCIDENTALLY FELL".split()
+    lines = []
+    for i in range(0, len(words), 2):
+        pair = words[i:i + 2]
+        for k in range(len(pair)):
+            t0, t1 = (i + k) * 0.6, (i + k + 1) * 0.6
+            txt = " ".join(("{\\c&H0000E5FF&}" + w + "{\\r}") if j == k else w for j, w in enumerate(pair))
+            lines.append(f"Dialogue: 0,0:00:{t0:05.2f},0:00:{t1:05.2f},Cap,,0,0,0,,{txt}")
+    ass.write_text(f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {W}
+PlayResY: {H}
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,Arial,34,&H00FFFFFF,&H00FFFFFF,{outline},&H80000000,-1,0,0,0,100,100,1,0,1,{border},2,2,20,20,200,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+""" + "\n".join(lines) + "\n", encoding="utf-8")
+    subprocess.run([ffmpeg_exe(), "-y", "-v", "error", "-i", str(clean), "-vf", f"ass={ass.name}",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "16", "-c:a", "copy", str(burned)],
+                   check=True, cwd=tmp_path)
+    return clean, burned
+
+
+def _gray_frames(path):
+    import numpy as np
+    raw = subprocess.run([ffmpeg_exe(), "-v", "error", "-i", str(path), "-vf", "fps=25", "-f", "rawvideo",
+                          "-pix_fmt", "gray", "-"], capture_output=True).stdout
+    return np.frombuffer(raw, np.uint8).reshape(-1, H, W).astype(int)
+
+
+@pytest.mark.parametrize("outline,border", [("&H00000000", 4), ("&H00505050", 2)])   # чёрная и серая тонкая обводка
+def test_erase_leaves_no_flashes_of_old_captions(tmp_path, outline, border):
+    """Регрессия: в отдельных кадрах проскакивали буквы старых субтитров («вспышки»)."""
+    import numpy as np
+    clean, burned = _hard_captions(tmp_path, outline, border)
+    out = tmp_path / "out.mp4"
+    rep = resub.replace_subtitles(burned, out, lambda p: [], tmp_path / "w", method="erase")
+    assert rep["mode"] == "erase"
+    C, B, O = _gray_frames(clean), _gray_frames(burned), _gray_frames(out)
+    n = min(len(C), len(B), len(O))
+    text = np.abs(B[:n] - C[:n]) > 60                       # где в каждом кадре были старые буквы
+    left = []
+    for i in range(n):
+        if text[i].sum() < 50:
+            continue
+        # «осталась буква» — пиксель на месте старого текста всё ещё близок к нему, а не к чистой картинке
+        still = text[i] & (np.abs(O[i] - B[i]) < 25) & (np.abs(O[i] - C[i]) > 60)
+        left.append(still.sum() / text[i].sum())
+    assert left and max(left) < 0.03, f"в худшем кадре осталось {max(left):.1%} старых букв"

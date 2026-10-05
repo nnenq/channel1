@@ -492,3 +492,84 @@ def test_two_line_captions_are_erased(tmp_path):
             still = text & (np.abs(O[i] - B[i]) < 25) & (np.abs(O[i] - C[i]) > 60)
             worst = max(worst, still.sum() / text.sum())
     assert worst < 0.03, f"в худшем кадре осталось {worst:.1%} старых букв"
+
+
+# ---------- «всё сразу»: длина -> уникализация -> кадр + субтитры + музыка ----------
+
+def test_combo_options_validation():
+    from reuploader import combo
+    assert combo.clean({}) == combo.DEFAULT
+    o = combo.clean({"frame": "erase", "subs": 0, "uniq": 1, "trim": " 0:58 ", "junk": 1})
+    assert o == {"frame": "erase", "subs": False, "uniq": True, "trim": "0:58"}
+    for bad in ({"frame": "hack"}, {"trim": "abc"}):
+        with pytest.raises(ValueError):
+            combo.clean(bad)
+    assert combo.describe(combo.DEFAULT, music=True) == "Как в CapCut · наши субтитры · уникализация · музыка"
+
+
+@pytest.fixture(scope="module")
+def speech_clip(tmp_path_factory):
+    """Видео с «речью» и паузами — чтобы было что сокращать."""
+    from tests.synth import make_video
+    from tests.test_smartcut import SCENES
+    p = tmp_path_factory.mktemp("sp") / "speech.mp4"
+    make_video(p, SCENES)
+    return p
+
+
+def test_combo_runs_all_steps(speech_clip, track, tmp_path):
+    from reuploader import combo
+    src_dur = probe(speech_clip).duration
+    heard = [Word(i * 0.5, i * 0.5 + 0.4, "слово" + ("." if i % 4 == 3 else "")) for i in range(20)]
+    stages = []
+    out = tmp_path / "out.mp4"
+    target = f"0:{int(src_dur * 0.7):02d}"
+    rep = combo.run(speech_clip, out, combo.clean({"frame": "capcut", "subs": True, "uniq": True, "trim": target}),
+                    lambda cache: ((lambda p: []) if "src" in str(cache) else (lambda p: heard)), tmp_path / "w",
+                    progress=lambda st, f: stages.append(f), music=track, music_level="mid")
+    info = probe(out)
+    assert (info.width, info.height) == (1080, 1920) and info.audio_streams == 1     # кадр как в CapCut
+    assert rep["frame"] == "capcut" and rep["words"] > 0 and rep["music"] == "calm beat.mp3"
+    assert rep["uniq"]["zoom"] and rep["trim"]["after"] < rep["trim"]["before"] and info.duration < src_dur * 0.9
+    assert stages == sorted(stages) and stages[-1] > 0.9                              # проценты только растут
+
+
+def test_combo_keeps_going_when_cannot_shorten(captioned, tmp_path):
+    from reuploader import combo
+    rep = combo.run(captioned, tmp_path / "o.mp4", combo.clean({"frame": "keep", "subs": False, "uniq": False,
+                                                                 "trim": "0:05"}),
+                    lambda cache: (lambda p: []), tmp_path / "w")
+    assert rep["trim"]["status"] == "failed" and "пауз" in rep["trim"]["why"]
+    assert abs(probe(tmp_path / "o.mp4").duration - 12) < 0.5
+
+
+def test_combo_job_through_queue_and_saved_choice(worker, captioned):
+    from aiohttp.test_utils import TestClient, TestServer
+    from reuploader.bot.cutjobs import job_dir
+    from reuploader.bot.web import WebApp
+    from tests.test_e2e_helpers import init_data
+    db, s, w, sent = worker
+    jid = db.create_cut_job(777, "kenny.mp4", 1, status="uploaded")
+    d = job_dir(s, jid)
+    d.mkdir(parents=True)
+    shutil.copy(captioned, d / "src.mp4")
+    db.update_cut_job(jid, src_path=str(d / "src.mp4"))
+    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u == 777, app_key="k", cut=w, stories=SimpleNamespace())
+
+    async def go():
+        async with TestClient(TestServer(WebApp(db, s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
+            h = {"X-Init-Data": init_data(777)}
+            bad = (await c.post(f"/api/cut/{jid}/run", json={"mode": "combo", "options": {"trim": "abc"}},
+                                headers=h)).status
+            r = await (await c.post(f"/api/cut/{jid}/run", json={"mode": "combo", "options": {
+                "frame": "keep", "subs": True, "uniq": False}}, headers=h)).json()
+            lst = await (await c.get("/api/cut", headers=h)).json()
+            return bad, r, lst
+    bad, r, lst = asyncio.run(go())
+    assert bad == 400 and r["mode"] == "combo" and r["status"] == "queued"
+    assert lst["combo"] == {"frame": "keep", "subs": True, "uniq": False, "trim": ""}   # выбор запомнен
+    db.set_prefs(777, music_on=0)
+    asyncio.run(w.run(db.cut_job(jid)))
+    job = db.cut_job(jid)
+    assert job["status"] == "done" and probe(job["out_path"]).height == H              # «кадр как есть»
+    assert "🖼 Кадр: Кадр как есть" in sent[-1][0] and "🔤 Наши субтитры" in sent[-1][0]

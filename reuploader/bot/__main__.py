@@ -278,12 +278,12 @@ class BotApp:
         uid = msg["from"]["id"]
         f = msg.get("video") or msg.get("document")
         size = f.get("file_size") or 0
-        btn = self.app_button("✂️ Открыть «Умную обрезку»", "#cut")
+        btn = self.app_button("🎬 Открыть «Обработку видео»", "#cut")
         if size > 20 * 1024 * 1024:
             await self.tg.send(uid, "Файл больше 20 МБ — Telegram не даёт боту его скачать. "
-                                    "Загрузи его через панель → «Умная обрезка» (там лимит "
-                                    f"{self.s.cut_max_mb} МБ): после загрузки можно обрезать или "
-                                    "заменить субтитры.", [[btn]] if btn else None)
+                                    "Загрузи его через панель → «🎬 Обработка видео» (там лимит "
+                                    f"{self.s.cut_max_mb} МБ) — дальше всё так же: выбираешь, что "
+                                    "сделать, и жмёшь «Сделать».", [[btn]] if btn else None)
             return
         name = f.get("file_name") or "video.mp4"
         info = await self.tg.call("getFile", file_id=f["file_id"])
@@ -295,18 +295,17 @@ class BotApp:
         async with self.tg.session.get(url) as r:
             src.write_bytes(await r.read())
         self.db.update_cut_job(jid, src_path=str(src), status="uploaded", size=src.stat().st_size)
-        btn = self.app_button("✂️ Обрезать (выбрать длину)", f"#cut{jid}")
-        buttons = [[{"text": "🔤 Стереть субтитры и вставить наши", "callback_data": f"subs:{jid}"}],
-                   [{"text": "🔤 Блюр-полоска", "callback_data": f"subsb:{jid}"},
-                    {"text": "🔤 Обрезать полосу", "callback_data": f"subsc:{jid}"}]] + ([[btn]] if btn else [])
-        await self.tg.send(uid, f"Видео «{esc(name)}» получил. Что сделать?\n"
-                                "🔤 <b>Стереть</b> — сотру буквы старых субтитров, картинку под ними дорисую "
-                                "и поставлю наши анимированные на то же место.\n"
-                                "🔤 <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой от края до края "
-                                "и поставлю наши поверх неё.\n"
-                                "🔤 <b>Обрезать полосу</b> — вырежу полосу со старым текстом и соберу вертикальное "
-                                "видео на размытом фоне.\n"
-                                "✂️ <b>Обрезать</b> — сокращу до нужной длины.", buttons)
+        from .. import combo as cb
+        from .cut_api import combo_defaults
+
+        opts = combo_defaults(self.db, uid)
+        prefs = self.db.prefs(uid)
+        what = cb.describe(opts, music=bool(prefs["music_on"]))
+        btn = self.app_button("⚙️ Выбрать, что сделать", f"#cut{jid}")
+        buttons = [[{"text": "🚀 Сделать", "callback_data": f"go:{jid}"}]] + ([[btn]] if btn else [])
+        await self.tg.send(uid, f"Видео «{esc(name)}» получил.\n\n🚀 <b>Сделать</b> — как в прошлый раз:\n"
+                                f"<i>{esc(what)}</i>\n\n⚙️ <b>Выбрать</b> — поменять кадр, субтитры, "
+                                "уникализацию или длину.", buttons)
 
     def status_text(self, uid):
         today = datetime.now(self.s.tz).date()
@@ -351,6 +350,22 @@ class BotApp:
                                            message_id=m["message_id"], reply_markup={"inline_keyboard": []})
                     except Exception:  # noqa: BLE001
                         pass
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
+        if data.startswith("go:"):
+            from .cut_api import combo_defaults, start_combo
+
+            job = self.db.cut_job(int(data.split(":")[1]))
+            if not job or job["user_id"] != user.get("id"):
+                answer = "Нет доступа"
+            elif job["status"] in ("queued", "running"):
+                answer = "Уже в работе"
+            elif not job["src_path"] or not Path(job["src_path"]).exists():
+                answer = "Видео уже удалено — пришли его заново"
+            else:
+                start_combo(self.db, job, combo_defaults(self.db, job["user_id"]))
+                self.cut.poke()
+                answer = "Делаю — пришлю сюда"
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
             return
         if data.startswith(("subs:", "subsb:", "subsc:")):

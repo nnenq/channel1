@@ -186,7 +186,7 @@ async function showHome() {
     <h1>Перезалив Shorts</h1>
     <div class="card">${cards || `<div class="empty">Пока нет проектов.<br>Проект = твои каналы-источники → 1 канал для перезалива.</div>`}</div>
     <div class="card" style="margin-top:12px"><div class="row tap chev" onclick="location.hash='#cut'">
-      <div class="grow"><b>✂️ Обрезка и 🔤 субтитры</b><div class="sub">Укоротить видео или заменить старые вшитые субтитры на наши</div></div></div></div>
+      <div class="grow"><b>🎬 Обработка видео</b><div class="sub">Кадр как в CapCut, наши субтитры, уникализация, музыка, длина — одной кнопкой</div></div></div></div>
     <div class="card" style="margin-top:12px"><div class="row tap chev" onclick="location.hash='#story'">
       <div class="grow"><b>🎬 Пересказы и теории</b><div class="sub">Из твоего мультфильма: бот пишет сценарии, ты озвучиваешь — бот собирает ролик</div></div></div></div>
     <h2>Новый проект</h2>
@@ -1001,9 +1001,9 @@ async function showCut(jid) {
   cutMeta = d;
   const job = jid ? (d.jobs.find(j => j.id === jid) || await guarded(() => api("GET", `/api/cut/${jid}`))) : null;
   $root.innerHTML = `
-    <h1>✂️ Обрезка и субтитры</h1>
-    <div class="hint" style="padding:0 4px 8px">Загрузи видео и выбери: <b>обрезать</b> (режу только в паузах речи,
-      сохраняю хук и развязку) или <b>заменить субтитры</b> (уберу старые вшитые и добавлю наши анимированные).
+    <h1>🎬 Обработка видео</h1>
+    <div class="hint" style="padding:0 4px 8px">1) Загрузи видео. 2) Выбери, что сделать: кадр как в CapCut,
+      наши субтитры, уникализацию, музыку, длину. 3) Жми «🚀 Сделать» — готовое видео придёт в чат.
       До ${d.max_mb} МБ и ${d.max_minutes} мин. Видео до 20 МБ можно просто кинуть боту в чат.</div>
     <div id="cutJob">${job ? "" : `<div class="card"><div class="row">
       <input type="file" id="cutFile" accept="video/*" class="grow"></div>
@@ -1013,14 +1013,16 @@ async function showCut(jid) {
       <div class="row tap" onclick="location.hash='#cut${j.id}'"><div class="grow" style="min-width:0">
         <div class="ellipsis">${esc(j.filename)}</div><div class="sub">${(j.mode || "").startsWith("subs") ? "🔤 субтитры · " : ""}${CUT_STATUS[j.status] || j.status}${j.target ? " · цель " + j.target + " с" : ""}</div></div>
         <span class="sub">›</span></div>`).join("")}</div>` : ""}`;
-  if (job) renderJob(job); else loadMusic();
+  combo = null;
+  loadMusic();
+  if (job) renderJob(job);
 }
 
 // ---------- фоновая музыка ----------
 let musicMeta = null, musicAudio = null;
 async function loadMusic() {
   const d = await api("GET", "/api/music").catch(() => null);
-  if (d) { musicMeta = d; renderMusic(); }
+  if (d) { musicMeta = d; renderMusic(); if (cutLast && /^#cut\d+/.test(location.hash) && +location.hash.slice(4) === cutLast.id) renderJob(cutLast); }
 }
 function renderMusic() {
   const box = document.getElementById("musicBox"), m = musicMeta;
@@ -1049,7 +1051,7 @@ function musicRow(id, title, sub, playable, deletable) {
 }
 async function musicPref(body) {
   const d = await guarded(() => api("PATCH", "/api/music", body));
-  if (d) { musicMeta = d; renderMusic(); }
+  if (d) { musicMeta = d; renderMusic(); if (cutLast && /^#cut\d+/.test(location.hash) && +location.hash.slice(4) === cutLast.id) renderJob(cutLast); }
 }
 async function musicUpload() {
   const f = document.getElementById("musicFile")?.files[0];
@@ -1134,24 +1136,7 @@ function renderJob(j) {
   }
   if (j.status === "failed") html += `<div class="row sub" style="color:var(--danger)">${esc(j.error || "ошибка")}</div>`;
   if (["uploaded", "failed", "done"].includes(j.status) && j.status !== "done" || (j.status === "done" && !j.report)) {
-    html += `
-      <div class="row"><button class="wide" onclick="runSubs(${j.id}, 'erase')">🔤 Стереть субтитры и вставить наши</button></div>
-      <div class="row" style="gap:8px"><button class="ghost grow" onclick="runSubs(${j.id}, 'strip')">Блюр-полоска</button>
-        <button class="ghost grow" onclick="runSubs(${j.id}, 'crop')">Обрезать полосу</button></div>
-      <div class="hint" style="padding:0 16px 8px"><b>Стереть</b> — сотру буквы старых субтитров, картинку под ними
-        дорисую и поставлю наши на то же место. <b>Блюр-полоска</b> — закрою старые субтитры размытой полосой
-        от края до края. <b>Обрезать полосу</b> — вырежу полосу со старым текстом. Длина ролика не меняется.</div>`;
-    html += cutOpen ? `
-      <div class="row"><b>✂️ Обрезать по длине</b></div>
-      <div class="row"><div class="seg">
-        <button id="tm_manual" class="on" onclick="cutMode('manual')">Вручную</button>
-        <button id="tm_channel" onclick="cutMode('channel')">Как на канале</button>
-        <button id="tm_list" onclick="cutMode('list')">Список</button></div></div>
-      <div id="tmBox"></div>
-      ${cutMeta?.ai_available ? `<div class="row"><label style="display:flex;gap:8px;align-items:center">
-        <input type="checkbox" id="tmAi"> 🤖 AI-анализ Claude (платно — сначала покажу цену)</label></div>` : ""}
-      <div class="row"><button class="wide ghost" onclick="runCut(${j.id})">✂️ Обрезать</button></div>`
-      : `<div class="row"><button class="wide ghost" onclick="cutOpen = true; renderJob(cutLast)">✂️ Обрезать (задать длину)</button></div>`;
+    html += comboForm(j);
   }
   if (j.status === "confirm" && j.estimate) {
     const e = j.estimate;
@@ -1170,6 +1155,57 @@ function renderJob(j) {
   html += `</div>`;
   box.innerHTML = html;
   if (document.getElementById("tmBox")) cutMode("manual");
+}
+
+// ---------- «что сделать с видео» — всё одной кнопкой ----------
+const FRAME_INFO = {
+  capcut: ["🎬", "оставлю только картинку на размытом фоне: надписи сверху и снизу отрежу, поверх картинки — сотру"],
+  erase: ["🧽", "кадр не меняю, старые субтитры стираю, картинку под ними дорисовываю"],
+  strip: ["🌫", "старые субтитры закрою размытой полосой от края до края"],
+  crop: ["✂️", "вырежу полосу со старым текстом, соберу вертикальное видео"],
+  keep: ["🖼", "кадр не трогаю, ничего не стираю"],
+};
+let combo = null;
+function comboForm(j) {
+  if (!combo) combo = { ...(cutMeta?.combo || { frame: "capcut", subs: true, uniq: true, trim: "" }) };
+  const c = combo, frames = cutMeta?.frames || {};
+  const music = musicMeta ? !!musicMeta.music_on : true;
+  const sw = (key, on, title, sub) => `<div class="row"><div class="grow">${title}<div class="sub">${sub}</div></div>
+      <label class="switch"><input type="checkbox" ${on ? "checked" : ""} onchange="comboSet('${key}', this.checked)"><span></span></label></div>`;
+  return `
+    <div class="row" style="padding-bottom:4px"><b>Что сделать с видео</b></div>
+    <div class="row sub" style="padding-top:0">Кадр</div>
+    ${Object.keys(FRAME_INFO).map(k => `<div class="row tap" onclick="comboSet('frame','${k}')">
+      <div style="width:26px">${c.frame === k ? "✅" : "⚪️"}</div>
+      <div class="grow">${FRAME_INFO[k][0]} ${esc(frames[k] || k)}<div class="sub">${FRAME_INFO[k][1]}</div></div></div>`).join("")}
+    ${sw("subs", c.subs, "🔤 Наши субтитры", "анимированные, по речи")}
+    ${sw("uniq", c.uniq, "✨ Уникализация", "лёгкий зум и наклон, цвет, скорость — у каждого ролика свои")}
+    ${sw("music", music, "🎵 Фоновая музыка", "тише голоса; трек выбирается в разделе «Оформление»")}
+    <div class="row"><div class="grow">⏱ Длина</div><div class="seg">
+      <button class="${c.trim === "" ? "on" : ""}" onclick="comboTrim(false)">Не менять</button>
+      <button class="${c.trim !== "" ? "on" : ""}" onclick="comboTrim(true)">Сократить</button></div></div>
+    ${c.trim !== "" ? `<div class="row"><div class="grow">До какой длины<div class="sub">например 0:58 или 1:30-2:00</div></div>
+      <input id="comboTrim" class="num" style="width:150px" inputmode="text" enterkeyhint="done" autocomplete="off"
+        placeholder="0:58" value="${esc(c.trim === " " ? "" : c.trim)}" oninput="combo.trim = this.value || ' '"></div>` : ""}
+    <div class="row"><button class="wide" onclick="runCombo(${j.id})">🚀 Сделать</button></div>
+    <div class="hint" style="padding:0 16px 10px">Выбор запомню: в следующий раз в чате будет одна кнопка «🚀 Сделать».</div>`;
+}
+function comboSet(key, val) {
+  if (key === "music") { musicPref({ music_on: val }); return; }
+  combo[key] = val;
+  renderJob(cutLast);
+}
+function comboTrim(on) {
+  combo.trim = on ? (combo.trim && combo.trim !== "" ? combo.trim : " ") : "";
+  renderJob(cutLast);
+  if (on) setTimeout(() => document.getElementById("comboTrim")?.focus(), 50);
+}
+async function runCombo(jid) {
+  document.activeElement?.blur?.();
+  const options = { ...combo, trim: (combo.trim || "").trim() };
+  if (combo.trim !== "" && !options.trim) return alertMsg("Напиши длину, например 0:58 — или выбери «Не менять».");
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, { mode: "combo", options }));
+  if (r) { haptic("success"); toast("Делаю — пришлю и в чат"); if (cutMeta) cutMeta.combo = options; renderJob(r); }
 }
 
 async function runSubs(jid, method) {
@@ -1205,6 +1241,19 @@ async function runCut(jid) {
   const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, body));
   if (r) { haptic("success"); renderJob(r); }
 }
+
+// клавиатура на телефоне: «Готово»/Enter и нажатие мимо поля убирают её
+document.addEventListener("focusin", e => {
+  if (e.target.matches("input:not([type=checkbox]):not([type=file])") && !e.target.hasAttribute("enterkeyhint"))
+    e.target.setAttribute("enterkeyhint", "done");
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.matches("input:not([type=checkbox]):not([type=file])")) { e.preventDefault(); e.target.blur(); }
+});
+document.addEventListener("pointerdown", e => {
+  const a = document.activeElement;
+  if (a && a.matches("input, textarea") && !e.target.closest("input, textarea, select, label")) a.blur();
+}, { passive: true });
 
 route();
 </script>

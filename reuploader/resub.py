@@ -4,7 +4,10 @@ analyze()  — по кадрам (2 в секунду, уменьшенным) �
              размытых полей) и в каких строках постоянно появляется текст с обводкой (субтитры,
              надписи-заголовки). Без OCR: текст = светлые (белые/жёлтые) штрихи с тёмной обводкой,
              много чередований по горизонтали, и стоит в одном месте у многих кадров.
-Три способа (method):
+Способы (method):
+  capcut — «как в CapCut»: остаётся только картинка мультика (надписи на полях отрезаются, поверх
+          картинки — стираются), вертикальный кадр 1080×1920 на размытом фоне из той же картинки;
+  keep  — кадр не трогать (только наши субтитры и музыка);
   erase — «стереть»: буквы старых субтитров (светлые с тёмной обводкой) стираются в каждом кадре,
           картинка под ними дорисовывается по соседним пикселям (inpainting, OpenCV); наши субтитры
           встают на то же место; размер кадра не меняется (по умолчанию);
@@ -27,7 +30,7 @@ SCAN_W = 360
 SCAN_FPS = 2
 TEXT_FREQ = 0.2          # строка «с текстом», если текст в ней в ≥20 % кадров
 MIN_KEEP = 0.6           # обрезаем, если остаётся ≥60 % картинки; иначе размываем полосы
-METHODS = ("erase", "strip", "crop")
+METHODS = ("capcut", "erase", "strip", "crop", "keep")
 
 
 @dataclass
@@ -378,9 +381,10 @@ def erase(band, mask):
     return np.where(mask[..., None] > 0, fill, band)
 
 
-def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
+def erase_render(src, out, lay, bands, subs=None, progress=None, look=None, layout=None):
     """Стирает буквы в полосах bands в каждом кадре и кодирует видео с исходным звуком
-    (look — музыка и улучшение картинки, см. replace_subtitles)."""
+    (look — музыка и улучшение картинки, см. replace_subtitles). layout — Layout для вертикальной
+    компоновки (как «Обрезать полосу»/«Как в CapCut»); без него размер кадра не меняется."""
     try:
         import cv2
     except ImportError:
@@ -394,7 +398,8 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None):
     if subs:
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
-    fc = f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance"))
+    fc = (build_filter(layout, subs_name, (look or {}).get("enhance")) if layout else
+          f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance")))
     geos = learn_geometry(src, info, bands, w, h) if bands else []
     bands, geos = widen(bands, geos, h)
     extra, graph = _sound("1:a" if info.audio_streams else None, 2, info.duration, look)
@@ -496,7 +501,29 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
     look = {"enhance": enhance, "level": music_level}
     if music:
         look.update(music=str(music), start=start_offset(probe(music).duration, probe(src).duration))
-    if method == "crop":
+    if method == "capcut":
+        # как в CapCut: «Кадрирование» — только картинка мультика (надписи на полях сверху/снизу
+        # отрезаются), «Холст: размытие» — вертикальный кадр на размытом фоне; надписи поверх
+        # картинки стираются
+        from dataclasses import replace as _dc_replace
+
+        c0, c1 = lay.content
+        frame = _dc_replace(lay, keep=(c0 // 2 * 2, max(c0 // 2 * 2 + 2, c1 // 2 * 2)), blur=[])
+        inside = [(max(a, c0), min(b, c1)) for a, b in lay.bands if b > c0 and a < c1]
+        subs = to_ass(words, OUT_W, OUT_H, work / "subs.ass") if words else None
+        if inside:
+            erase_render(src, out, lay, [(a // 2 * 2, b) for a, b in inside], subs, progress=build, look=look,
+                         layout=frame)
+        else:
+            render(src, out, frame, subs, progress=build, look=look)
+        mode = "capcut"
+    elif method == "keep":
+        # кадр не трогаем: только наши субтитры / музыка
+        w, h = lay.width // 2 * 2, lay.height // 2 * 2
+        subs = to_ass(words, w, h, work / "subs.ass") if words else None
+        render(src, out, lay, subs, progress=build, strips=[], look=look)
+        mode = "keep"
+    elif method == "crop":
         subs = to_ass(words, OUT_W, OUT_H, work / "subs.ass") if words else None
         render(src, out, lay, subs, progress=build, look=look)
         mode = lay.mode

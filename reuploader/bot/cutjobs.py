@@ -76,6 +76,25 @@ def music_dir(settings, uid):
 
 def report_text(report):
     """Отчёт задачи для чата и панели."""
+    if report.get("kind") == "combo":
+        from ..combo import FRAMES
+
+        o = report["options"]
+        lines = [f"🖼 Кадр: {FRAMES.get(o['frame'], o['frame'])}"]
+        lines.append(f"🔤 Наши субтитры: {report.get('words', 0)} слов" if o["subs"] else "🔤 Без наших субтитров")
+        if o["uniq"]:
+            u = report.get("uniq") or {}
+            lines.append(f"✨ Уникализация: зум {u.get('zoom')}, наклон {u.get('rotate_deg')}°, "
+                         f"скорость ×{u.get('tempo') or 1}")
+        t = report.get("trim")
+        if t and t.get("status") == "failed":
+            lines.append(f"✂️ Длину не менял: {t.get('why', '')}")
+        elif t:
+            lines.append(f"✂️ Длина: {t['before']:.0f} с → {t['after']:.0f} с" if t.get("after") else
+                         "✂️ Ролик уже короче — длину не менял")
+        if report.get("music"):
+            lines.append(f"🎵 Музыка: {report['music']}")
+        return "\n".join(lines)
     if report.get("kind") == "subs":
         text = (f"🔤 Субтитры заменены: {SUBS_MODE_RU.get(report['mode'], report['mode'])}; "
                 f"наши — по речи ({report['words']} слов).")
@@ -132,6 +151,8 @@ class CutWorker:
             self.wake.clear()
 
     async def run(self, job):
+        if job["mode"] == "combo":
+            return await self.combo(job)
         if job["mode"] in SUBS_MODES:
             return await self.resub(job)
         if job["mode"] == "ai" and job["ai_state"] != "confirmed":
@@ -295,6 +316,62 @@ class CutWorker:
         report["kind"] = "subs"
         report["music"] = title
         await self._deliver(job, msg, out, report, f"🔤 {esc(job['filename'])}")
+
+    async def combo(self, job):
+        """«Всё сразу»: длина -> уникализация -> кадр + наши субтитры + музыка (см. reuploader.combo)."""
+        from .. import combo as cb
+        from .. import music as mu
+
+        jid, uid = job["id"], job["user_id"]
+        try:
+            opts = cb.clean(json.loads(job["options"] or "{}"))
+        except ValueError as e:
+            await self._fail(job, str(e), None, "сделать")
+            return
+        self.db.update_cut_job(jid, status="running", stage="старт", progress=0)
+        head = f"🚀 Делаю «{esc(job['filename'])}»…"
+        msg = await self.bot.tg.send(uid, f"{head}\n{bar(0)} 0%")
+        if msg:
+            self.db.update_cut_job(jid, tg_message_id=msg["message_id"])
+        state = {"stage": "старт", "frac": 0.0}
+
+        def progress(stage, frac):
+            state.update(stage=stage, frac=frac)
+            self.db.update_cut_job(jid, stage=stage, progress=round(frac, 3))
+
+        async def ticker():
+            last = None
+            while True:
+                await asyncio.sleep(PROGRESS_EVERY)
+                cur = (state["stage"], int(state["frac"] * 100))
+                if msg and cur != last:
+                    last = cur
+                    await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
+
+        prefs = self.db.prefs(uid)
+        track, title = (await asyncio.get_running_loop().run_in_executor(
+            None, mu.resolve, prefs["music_track"], music_dir(self.s, uid), self.s.data_dir / "music_builtin")
+            if prefs["music_on"] else (None, None))
+
+        def make_tr(cache):
+            return cached_transcriber(partial(whisper_transcribe, model_size=self.s.whisper_model), cache)
+
+        out = job_dir(self.s, jid) / "out.mp4"
+        tick = asyncio.create_task(ticker())
+        try:
+            report = await asyncio.get_running_loop().run_in_executor(None, partial(
+                cb.run, job["src_path"], out, opts, make_tr, job_dir(self.s, jid) / "tmp", progress,
+                track, prefs["music_level"]))
+        except Exception as e:  # noqa: BLE001
+            log.exception("всё сразу %s", jid)
+            await self._fail(job, f"{type(e).__name__}: {e}", msg, "сделать")
+            return
+        finally:
+            tick.cancel()
+            shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
+            Path(job["src_path"]).unlink(missing_ok=True)
+        report["music"] = title
+        await self._deliver(job, msg, out, report, f"🚀 {esc(job['filename'])}")
 
     async def _deliver(self, job, msg, out, report, caption):
         """Готовый файл: в Telegram (до лимита) или ссылкой на скачивание."""

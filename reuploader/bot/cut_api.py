@@ -61,12 +61,16 @@ class CutApi:
             "report": report, "report_text": report_text(report) if report else None,
             "link": (f"/dl/{job['dl_token']}" if self.w.bot.cut.link_valid(job) else None),
             "mode": job["mode"], "ai_state": job["ai_state"],
+            "options": json.loads(job["options"]) if job["options"] else None,
             "estimate": json.loads(job["estimate"]) if job["estimate"] else None,
         }
 
     async def list(self, request):
+        from .. import combo as cb
+
         jobs = self.db.cut_jobs(request["user"]["id"])
         return web.json_response({"jobs": [self._json(j) for j in jobs], "chunk": CHUNK,
+                                  "combo": combo_defaults(self.db, request["user"]["id"]), "frames": cb.FRAMES,
                                   "max_mb": self.s.cut_max_mb, "max_minutes": self.s.cut_max_minutes,
                                   "ai_available": self.w.bot.cut.ai_allowed(request["user"]["id"])})
 
@@ -135,6 +139,16 @@ class CutApi:
         body = await request.json()
         mode = body.get("mode")
         tolerance = 0.05
+        if mode == "combo":      # всё сразу по выбору: длина, уникализация, кадр, субтитры (+ музыка)
+            from .. import combo as cb
+
+            try:
+                opts = cb.clean(body.get("options") or {})
+            except ValueError as e:
+                raise ApiError(str(e)) from None
+            start_combo(self.db, job, opts)
+            self.w.bot.cut.poke()
+            return web.json_response(self._json(self.db.cut_job(job["id"])))
         if mode == "subs":       # замена вшитых субтитров — длина не нужна; method: erase | strip | crop
             method = body.get("method") if body.get("method") in ("strip", "crop") else "erase"
             self.db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
@@ -335,3 +349,22 @@ def _quote(s):
 
     return quote(s)
 
+
+def combo_defaults(db, uid):
+    """Последний выбор пользователя «что сделать с видео» (или стандартный)."""
+    from .. import combo as cb
+
+    try:
+        return cb.clean(json.loads(db.prefs(uid)["combo"] or "{}"))
+    except (ValueError, TypeError):
+        return dict(cb.DEFAULT)
+
+
+def start_combo(db, job, opts):
+    """Ставит задачу «всё сразу» в очередь и запоминает выбор как стандартный."""
+    from .. import combo as cb
+
+    db.set_prefs(job["user_id"], combo=json.dumps(opts, ensure_ascii=False))
+    db.update_cut_job(job["id"], status="queued", stage="в очереди", progress=0, target=None,
+                      target_info=cb.describe(opts), error=None, report=None, mode="combo",
+                      options=json.dumps(opts, ensure_ascii=False), ai_state=None, estimate=None)

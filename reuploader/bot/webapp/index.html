@@ -1159,7 +1159,7 @@ function renderJob(j) {
 
 // ---------- «что сделать с видео» — всё одной кнопкой ----------
 const FRAME_INFO = {
-  capcut: ["🎬", "оставлю только картинку на размытом фоне: надписи сверху и снизу отрежу, поверх картинки — сотру"],
+  capcut: ["🎬", "оставлю только картинку на размытом фоне: надписи сверху и снизу отрежу, поверх картинки — сотру (уже включает «Стереть субтитры»)"],
   erase: ["🧽", "кадр не меняю, старые субтитры стираю, картинку под ними дорисовываю"],
   strip: ["🌫", "старые субтитры закрою размытой полосой от края до края"],
   crop: ["✂️", "вырежу полосу со старым текстом, соберу вертикальное видео"],
@@ -1174,10 +1174,11 @@ function comboForm(j) {
       <label class="switch"><input type="checkbox" ${on ? "checked" : ""} onchange="comboSet('${key}', this.checked)"><span></span></label></div>`;
   return `
     <div class="row" style="padding-bottom:4px"><b>Что сделать с видео</b></div>
-    <div class="row sub" style="padding-top:0">Кадр</div>
+    <div class="row sub" style="padding-top:0">Кадр — выбери один вариант (остальное ниже включается в любом сочетании)</div>
     ${Object.keys(FRAME_INFO).map(k => `<div class="row tap" onclick="comboSet('frame','${k}')">
       <div style="width:26px">${c.frame === k ? "✅" : "⚪️"}</div>
       <div class="grow">${FRAME_INFO[k][0]} ${esc(frames[k] || k)}<div class="sub">${FRAME_INFO[k][1]}</div></div></div>`).join("")}
+    <div class="row sub">Дополнительно — можно включить всё сразу</div>
     ${sw("subs", c.subs, "🔤 Наши субтитры", "анимированные, по речи")}
     ${sw("uniq", c.uniq, "✨ Уникализация", "лёгкий зум и наклон, цвет, скорость — у каждого ролика свои")}
     ${sw("music", music, "🎵 Фоновая музыка", "тише голоса; трек выбирается в разделе «Оформление»")}

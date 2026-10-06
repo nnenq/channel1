@@ -50,7 +50,9 @@ def render(src, dst, segments, info, crf=18):
     args = ["-y", "-i", str(src), "-filter_complex", graph, "-map", "[vout]"]
     if has_audio:
         args += ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k"]
-    args += ["-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-r", f"{info.fps:.3f}",
+    from ..ffmpeg_path import video_args
+
+    args += [*video_args(crf), "-r", f"{info.fps:.3f}",
              "-movflags", "+faststart", "-map_metadata", "-1", str(dst)]
     run_ffmpeg(args)
     return dst

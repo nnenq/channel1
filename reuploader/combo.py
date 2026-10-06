@@ -87,6 +87,7 @@ def run(src, out, o, make_transcriber, work_dir, progress=None, music=None, musi
             report["trim"] = {"status": "failed", "why": str(e)}
     if "uniq" in steps:
         fx = randomize(dict(DEFAULT_EFFECTS, edge_blur=None, subtitles=False, mirror=False))
+        fx["intermediate"] = True          # файл всё равно перекодируется на шаге «кадр» — кодируем быстро
         uq = work / "uniq.mp4"
         step = sub("uniq")
         apply_effects(cur, uq, fx, progress=lambda f: step("уникализирую", f))

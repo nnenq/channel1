@@ -10,7 +10,7 @@ import random as _random
 import subprocess
 from pathlib import Path
 
-from .ffmpeg_path import ffmpeg_exe
+from .ffmpeg_path import ffmpeg_exe, video_args
 
 DEFAULT_EFFECTS = {
     "zoom": 1.05,
@@ -69,12 +69,18 @@ def build_filter(effects, subtitles=None):
     zoom = max(zoom, need if rotate else 1.0)
 
     chain = []
-    if zoom > 1.0:
-        chain.append(f"scale={_even(f'iw*{zoom}')}:{_even(f'ih*{zoom}')}:flags=lanczos")
-    if rotate:
-        chain.append(f"rotate={math.radians(rotate):.6f}:ow=iw:oh=ih:c=black")
-    if zoom > 1.0:
-        chain.append(f"crop={_even(f'iw/{zoom}')}:{_even(f'ih/{zoom}')}")
+    if zoom > 1.0 or rotate:
+        # увеличение + поворот + обрезка одним фильтром perspective: он считает кадр на всех ядрах,
+        # а связка scale/rotate/crop — на одном (вдвое медленнее). Углы выхода берутся из точек
+        # исходника: центр + поворот (по часовой) уголка, делённого на зум.
+        a = math.radians(rotate)
+        c, s = math.cos(a), math.sin(a)
+        pts = []
+        for k, (dx, dy) in enumerate(((-1, -1), (1, -1), (-1, 1), (1, 1))):
+            x = f"W/2+({c * dx:.6f}*W/2+{s * dy:.6f}*H/2)/{zoom:.4f}"
+            y = f"H/2+({-s * dx:.6f}*W/2+{c * dy:.6f}*H/2)/{zoom:.4f}"
+            pts.append(f"x{k}={x}:y{k}={y}")
+        chain.append(f"perspective={':'.join(pts)}:interpolation=linear")
     if shadows > 0:
         s = shadows
         # Поднимаем тёмную часть кривой, светлые тона почти не трогаем.
@@ -124,7 +130,7 @@ def shrink_to(path, max_mb, duration):
     tmp = path + ".small.mp4"
     subprocess.run([
         ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", path,
-        "-c:v", "libx264", "-preset", "medium", "-b:v", f"{video_kbps}k",
+        "-c:v", "libx264", "-preset", "veryfast", "-b:v", f"{video_kbps}k",
         "-maxrate", f"{video_kbps}k", "-bufsize", f"{video_kbps * 2}k",
         "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", tmp,
     ], check=True)
@@ -150,8 +156,7 @@ def apply_effects(src, dst, effects, subtitles=None, progress=None):
     if abs(tempo - 1) > 1e-3:
         cmd += ["-filter:a", f"atempo={tempo}"]
     cmd += [
-        "-c:v", "libx264", "-preset", "medium",
-        "-crf", str(effects.get("crf", 20)),
+        *video_args(effects.get("crf", 20), intermediate=bool(effects.get("intermediate"))),
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
     ]

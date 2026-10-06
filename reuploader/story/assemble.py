@@ -14,7 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from ..ffmpeg_path import ffmpeg_exe
+from ..ffmpeg_path import ffmpeg_exe, video_args
 from ..smartcut.media import probe
 
 W, H = 1080, 1920
@@ -116,8 +116,9 @@ def build_filter(n, subs_name=None, mirror=False):
     # кадр по центру: 4:3 из середины (как в популярных Shorts), фон — тот же кадр, размытый
     layout = ("[cat]split[fg][bg];"
               "[fg]crop='min(iw,ih*4/3)':ih,scale=1080:-2[f];"
-              f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},gblur=sigma=40,"
-              "eq=brightness=-0.08[b];"
+              # фон размываем уменьшенным в 8 раз и растягиваем — на вид то же, а быстрее
+              f"[bg]scale={W // 8}:{H // 8}:force_original_aspect_ratio=increase,crop={W // 8}:{H // 8},"
+              f"gblur=sigma=5,eq=brightness=-0.08,scale={W}:{H}:flags=bicubic[b];"
               "[b][f]overlay=0:(H-h)/2")
     tail = (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
     return parts + cat + layout + tail
@@ -147,7 +148,7 @@ def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=Fals
         sound = f"[{n}:a]loudnorm=I=-15:TP=-1.5:LRA=11,aresample=48000[a]"
     fc = build_filter(n, subs_name, mirror) + ";" + sound
     cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
+            *video_args(crf),
             "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart",
             "-map_metadata", "-1", str(out)]
     from .. import ffprog

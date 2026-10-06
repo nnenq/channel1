@@ -1,5 +1,6 @@
 """Разметка ролика: слова с таймкодами, паузы, смены сцен, громкость по времени."""
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 
@@ -74,6 +75,24 @@ def detect_scenes(path, threshold=0.25):
     return [float(x) for x in re.findall(r"pts_time:([\d.]+)", err)]
 
 
+_MODELS = {}
+_LOCK = __import__("threading").Lock()       # одна общая модель — распознаём по очереди
+
+
+def _whisper_model(model_size):
+    """Модель whisper загружается один раз на процесс (раньше — на каждый ролик, плюс запрос к
+    huggingface.co). Уже скачанная модель берётся с диска без интернета. Видеокарта NVIDIA (CUDA)
+    используется сама, если есть."""
+    from faster_whisper import WhisperModel
+
+    if model_size not in _MODELS:
+        try:
+            _MODELS[model_size] = WhisperModel(model_size, device="auto", compute_type="int8", local_files_only=True)
+        except Exception:  # noqa: BLE001 — модели ещё нет на диске: скачиваем
+            _MODELS[model_size] = WhisperModel(model_size, device="auto", compute_type="int8")
+    return _MODELS[model_size]
+
+
 def whisper_transcribe(path, model_size="small", language=None, progress=None):
     """Слова с таймкодами через faster-whisper (локально, без сети после загрузки модели).
     progress(доля 0..1) — по тому, до какой секунды файла дошло распознавание."""
@@ -82,15 +101,17 @@ def whisper_transcribe(path, model_size="small", language=None, progress=None):
     except ImportError:
         log.warning("faster-whisper не установлен — режу только по паузам, без учёта речи")
         return []
-    model = WhisperModel(model_size, device="auto", compute_type="int8")
-    segments, info = model.transcribe(str(path), word_timestamps=True, language=language, vad_filter=True)
-    duration = getattr(info, "duration", 0) or 0
-    words = []
-    for seg in segments:
-        if progress and duration:
-            progress(min(1.0, float(seg.end) / duration))
-        for w in seg.words or []:
-            words.append(Word(float(w.start), float(w.end), w.word.strip()))
+    with _LOCK:
+        model = _whisper_model(model_size)
+        segments, info = model.transcribe(str(path), word_timestamps=True, language=language, vad_filter=True,
+                                          beam_size=int(os.getenv("WHISPER_BEAM", "1")))
+        duration = getattr(info, "duration", 0) or 0
+        words = []
+        for seg in segments:
+            if progress and duration:
+                progress(min(1.0, float(seg.end) / duration))
+            for w in seg.words or []:
+                words.append(Word(float(w.start), float(w.end), w.word.strip()))
     return words
 
 

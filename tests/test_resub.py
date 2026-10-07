@@ -615,3 +615,38 @@ def test_cancel_button_stops_job_and_keeps_video(worker, captioned):
     db.update_cut_job(jid, status="queued")
     asyncio.run(w.run(db.cut_job(jid)))
     assert db.cut_job(jid)["status"] == "done"
+
+
+def test_share_link_for_claude(worker, captioned):
+    """«🔗 Ссылка для Claude»: открытая ссылка на видео любого размера; без входа, со сроком, уходит и в чат."""
+    from aiohttp.test_utils import TestClient, TestServer
+    from reuploader.bot.cutjobs import job_dir
+    from reuploader.bot.web import WebApp
+    from tests.test_e2e_helpers import init_data
+    db, s, w, sent = worker
+    jid = db.create_cut_job(777, "Губка Боб.mp4", 1, status="uploaded")
+    d = job_dir(s, jid)
+    d.mkdir(parents=True)
+    shutil.copy(captioned, d / "src.mp4")
+    db.update_cut_job(jid, src_path=str(d / "src.mp4"))
+    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u == 777, app_key="k", cut=w, stories=SimpleNamespace(),
+                          public_url="https://bot.example", tg=w.bot.tg)
+
+    async def go():
+        async with TestClient(TestServer(WebApp(db, s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
+            h = {"X-Init-Data": init_data(777)}
+            stranger = (await c.post(f"/api/cut/{jid}/share", json={})).status
+            r = await (await c.post(f"/api/cut/{jid}/share", json={}, headers=h)).json()
+            path = r["url"].replace("https://bot.example", "")
+            full = await c.get(path)                                       # без входа в Telegram
+            body = await full.read()
+            part = await c.get(path, headers={"Range": "bytes=0-99"})
+            bad = (await c.get(path.replace(path.split("/")[2], "nope"))).status
+            db.update_cut_job(jid, share_until="2000-01-01T00:00:00+00:00")
+            expired = (await c.get(path)).status
+            return stranger, r, full.status, full.headers["Content-Type"], body, part.status, bad, expired
+    stranger, r, st, ctype, body, part, bad, expired = asyncio.run(go())
+    assert stranger == 401 and r["what"] == "src" and r["hours"] == s.cut_link_ttl_h
+    assert st == 200 and ctype == "video/mp4" and body == (d / "src.mp4").read_bytes()
+    assert part == 206 and bad == 404 and expired == 404
+    assert r["url"] in sent[-1][0] and "Ссылка для Claude" in sent[-1][0]          # и в чат

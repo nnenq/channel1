@@ -244,6 +244,9 @@ MIGRATIONS = [
     ("user_prefs", "music_track", "TEXT NOT NULL DEFAULT ''"),   # "" — случайный, builtin:<имя> или свой файл
     ("user_prefs", "combo", "TEXT NOT NULL DEFAULT ''"),         # последний выбор «что сделать с видео» (JSON)
     ("cut_jobs", "options", "TEXT"),                              # выбор для задачи «всё сразу» (JSON)
+    ("cut_jobs", "share_token", "TEXT"),                          # «🔗 Ссылка для Claude»: открытая ссылка на файл
+    ("cut_jobs", "share_what", "TEXT"),                           # src — исходное видео, out — готовое
+    ("cut_jobs", "share_until", "TEXT"),                          # до какого времени ссылка работает
 ]
 
 PROJECT_FIELDS = {
@@ -563,6 +566,9 @@ class DB:
 
     def cut_job_by_token(self, token):
         return self.one("SELECT * FROM cut_jobs WHERE dl_token = ?", token)
+
+    def cut_job_by_share(self, token):
+        return self.one("SELECT * FROM cut_jobs WHERE share_token = ?", token)
 
     def expired_cut_jobs(self, now_iso):
         return self.q("SELECT * FROM cut_jobs WHERE delete_at IS NOT NULL AND delete_at <= ?", now_iso)

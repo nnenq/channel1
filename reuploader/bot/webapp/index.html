@@ -1138,6 +1138,8 @@ function renderJob(j) {
     cutPoll = setTimeout(async () => { const r = await api("GET", `/api/cut/${j.id}`).catch(() => null); if (r) renderJob(r); }, 2000);
   }
   if (j.status === "failed") html += `<div class="row sub" style="color:var(--danger)">${esc(j.error || "ошибка")}</div>`;
+  if (j.status !== "uploading") html += `<div class="row"><button class="ghost wide" onclick="shareJob(${j.id})">🔗 Ссылка для Claude${j.link ? " (готовое видео)" : ""}</button></div>
+    <div id="shareBox"></div>`;
   if (["uploaded", "failed", "done"].includes(j.status) && j.status !== "done" || (j.status === "done" && !j.report)) {
     html += comboForm(j);
   }
@@ -1214,6 +1216,17 @@ async function runCombo(jid) {
   if (r) { haptic("success"); toast("Делаю — пришлю и в чат"); if (cutMeta) cutMeta.combo = options; renderJob(r); }
 }
 
+async function shareJob(jid) {
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/share`, {}));
+  if (!r) return;
+  let copied = false;
+  try { await navigator.clipboard.writeText(r.url); copied = true; } catch (e) {}
+  const box = document.getElementById("shareBox");
+  if (box) box.innerHTML = `<div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+    <input readonly value="${esc(r.url)}" onclick="this.select()" style="width:100%">
+    <div class="sub">Отправь эту ссылку Claude в чат. Работает ${r.hours} ч. Ссылку прислал и в Telegram.</div></div>`;
+  haptic("success"); toast(copied ? "Ссылка скопирована" : "Ссылка в чате с ботом");
+}
 async function cancelJob(jid) {
   const r = await guarded(() => api("POST", `/api/cut/${jid}/cancel`));
   if (r) { haptic("success"); toast(r.message || "Отменил"); combo = null; renderJob(r); }

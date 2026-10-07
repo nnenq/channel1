@@ -28,6 +28,8 @@ def setup(webapp, router):
     router.add_post("/api/balance/topup", api.add_topup)
     router.add_delete("/api/balance/topup/{tid}", api.delete_topup)
     router.add_get("/dl/{token}", api.download)
+    router.add_post("/api/cut/{jid}/share", api.share)
+    router.add_get("/share/{token}/{name}", api.shared_file)
     router.add_get("/api/music", api.music_list)
     router.add_put("/api/music", api.music_upload)
     router.add_patch("/api/music", api.music_prefs)
@@ -344,6 +346,50 @@ class CutApi:
         shutil.rmtree(job_dir(self.s, job["id"]), ignore_errors=True)
         self.db.x("DELETE FROM cut_jobs WHERE id = ?", job["id"])
         return web.json_response({"ok": True})
+
+    async def share(self, request):
+        """«🔗 Ссылка для Claude»: открытая ссылка на видео (исходное или готовое), чтобы отдать файл
+        больше лимита чата. Работает CUT_LINK_TTL_H часов или пока файл не удалён."""
+        import secrets
+        from datetime import timedelta
+
+        from .db import iso, utcnow
+        from .web import ApiError
+
+        job = self._job(request)
+        if not self.w.bot.public_url:
+            raise ApiError("У бота нет публичного адреса — ссылку сделать нельзя.")
+        body = await request.json() if request.can_read_body else {}
+        what = body.get("what")
+        if what not in ("src", "out"):
+            what = "out" if self.w.bot.cut.link_valid(job) else "src"
+        path = job["out_path"] if what == "out" else job["src_path"]
+        if job["status"] == "uploading" or not path or not Path(path).exists():
+            raise ApiError("Файла уже нет — загрузи видео заново." if job["status"] != "uploading"
+                           else "Дождись окончания загрузки.")
+        token = secrets.token_urlsafe(18)
+        until = utcnow() + timedelta(hours=self.s.cut_link_ttl_h)
+        self.db.update_cut_job(job["id"], share_token=token, share_what=what, share_until=iso(until))
+        name = Path(job["filename"]).stem[:60] + ("_result" if what == "out" else "") + ".mp4"
+        url = f"{self.w.bot.public_url}/share/{token}/{_quote(name)}"
+        try:           # ссылку — и в чат: из Telegram её проще скопировать на телефоне
+            await self.w.bot.tg.send(job["user_id"], f"🔗 Ссылка для Claude на {'готовое' if what == 'out' else 'исходное'} "
+                                                     f"видео «{job['filename']}» (работает {self.s.cut_link_ttl_h} ч):\n{url}")
+        except Exception:  # noqa: BLE001
+            pass
+        return web.json_response({"url": url, "what": what, "hours": self.s.cut_link_ttl_h,
+                                  "size": Path(path).stat().st_size})
+
+    async def shared_file(self, request):
+        from .db import iso, utcnow
+
+        job = self.db.cut_job_by_share(request.match_info["token"])
+        path = job and (job["out_path"] if job["share_what"] == "out" else job["src_path"])
+        if not job or not path or not Path(path).exists() or (job["share_until"] or "") < iso(utcnow()):
+            raise web.HTTPNotFound(text="Ссылка устарела или файл уже удалён.")
+        return web.FileResponse(path, headers={
+            "Content-Type": "video/mp4", "Cache-Control": "no-store", "X-Robots-Tag": "noindex",
+            "Content-Disposition": f"inline; filename*=UTF-8''{_quote(request.match_info['name'])}"})
 
     async def download(self, request):
         job = self.db.cut_job_by_token(request.match_info["token"])

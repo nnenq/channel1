@@ -74,6 +74,14 @@ def music_dir(settings, uid):
     return settings.data_dir / "music" / str(uid)
 
 
+class Cancelled(Exception):
+    """Пользователь нажал «Отменить»."""
+
+
+def cancel_button(jid):
+    return [[{"text": "⏹ Отменить", "callback_data": f"cancel:{jid}"}]]
+
+
 def report_text(report):
     """Отчёт задачи для чата и панели."""
     if report.get("kind") == "combo":
@@ -123,6 +131,7 @@ class CutWorker:
         self.bot = bot           # BotApp: tg, app_button, public_url, owner_id
         self.balance = Balance(db)
         self.wake = asyncio.Event()
+        self.stop = set()        # задачи, которые попросили отменить (проверяется в progress)
 
     def ai_allowed(self, uid):
         """AI-режим тратит деньги владельца: по умолчанию только ему (CUT_AI_FOR_ALL=1 — всем)."""
@@ -159,13 +168,17 @@ class CutWorker:
             self.wake.clear()
 
     async def run(self, job):
-        if job["mode"] == "combo":
-            return await self.combo(job)
-        if job["mode"] in SUBS_MODES:
-            return await self.resub(job)
-        if job["mode"] == "ai" and job["ai_state"] != "confirmed":
-            return await self.estimate(job)
-        return await self.cut(job)
+        self.stop.discard(job["id"])           # старая отмена (после которой задачу запустили заново) не в счёт
+        try:
+            if job["mode"] == "combo":
+                return await self.combo(job)
+            if job["mode"] in SUBS_MODES:
+                return await self.resub(job)
+            if job["mode"] == "ai" and job["ai_state"] != "confirmed":
+                return await self.estimate(job)
+            return await self.cut(job)
+        finally:
+            self.stop.discard(job["id"])
 
     async def estimate(self, job):
         """AI-режим, шаг 1: локальная разметка + оценка цены. Никаких платных запросов."""
@@ -217,13 +230,15 @@ class CutWorker:
     async def cut(self, job):
         jid, uid = job["id"], job["user_id"]
         self.db.update_cut_job(jid, status="running", stage="старт", progress=0)
-        msg = await self.bot.tg.send(uid, f"✂️ Обрезаю «{esc(job['filename'])}»…\n{bar(0)} 0%")
+        msg = await self.bot.tg.send(uid, f"✂️ Обрезаю «{esc(job['filename'])}»…\n{bar(0)} 0%", cancel_button(jid))
         if msg:
             self.db.update_cut_job(jid, tg_message_id=msg["message_id"])
 
         state = {"stage": "старт", "frac": 0.0}
 
         def progress(stage, frac):          # вызывается из рабочего потока
+            if jid in self.stop:            # нажали «Отменить» — прерываем работу в этом потоке
+                raise Cancelled()
             state.update(stage=stage, frac=frac)
             self.db.update_cut_job(jid, stage=stage, progress=round(frac, 3))
 
@@ -235,7 +250,8 @@ class CutWorker:
                 if msg and cur != last:
                     last = cur
                     await self._edit(uid, msg["message_id"],
-                                     f"✂️ Обрезаю «{esc(job['filename'])}»…\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
+                                     f"✂️ Обрезаю «{esc(job['filename'])}»…\n{bar(state['frac'])} {cur[1]}% — {cur[0]}",
+                                     cancel_button(jid))
 
         out = job_dir(self.s, jid) / "out.mp4"
         scorer = None
@@ -254,16 +270,21 @@ class CutWorker:
                 transcriber=self.transcriber(jid), scorer=scorer,
                 work_dir=job_dir(self.s, jid) / "tmp"))
         except CutError as e:
+            if jid in self.stop:
+                return await self._cancelled(job, msg)
             await self._fail(job, str(e), msg)
             return
         except Exception as e:  # noqa: BLE001
+            if jid in self.stop:
+                return await self._cancelled(job, msg)
             log.exception("обрезка %s", jid)
             await self._fail(job, f"{type(e).__name__}: {e}", msg)
             return
         finally:
             tick.cancel()
             shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
-            Path(job["src_path"]).unlink(missing_ok=True)      # исходник больше не нужен
+            if jid not in self.stop:          # после отмены исходник оставляем — можно выбрать заново
+                Path(job["src_path"]).unlink(missing_ok=True)      # исходник больше не нужен
 
         text = format_report(report)
         if report["status"] == "already_short":
@@ -283,12 +304,14 @@ class CutWorker:
         jid, uid = job["id"], job["user_id"]
         self.db.update_cut_job(jid, status="running", stage="старт", progress=0)
         head = f"🔤 Меняю субтитры в «{esc(job['filename'])}»…"
-        msg = await self.bot.tg.send(uid, f"{head}\n{bar(0)} 0%")
+        msg = await self.bot.tg.send(uid, f"{head}\n{bar(0)} 0%", cancel_button(jid))
         if msg:
             self.db.update_cut_job(jid, tg_message_id=msg["message_id"])
         state = {"stage": "старт", "frac": 0.0}
 
         def progress(stage, frac):
+            if jid in self.stop:            # нажали «Отменить» — прерываем работу в этом потоке
+                raise Cancelled()
             state.update(stage=stage, frac=frac)
             self.db.update_cut_job(jid, stage=stage, progress=round(frac, 3))
 
@@ -299,7 +322,8 @@ class CutWorker:
                 cur = (state["stage"], int(state["frac"] * 100))
                 if msg and cur != last:
                     last = cur
-                    await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
+                    await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}",
+                                     cancel_button(jid))
 
         out = job_dir(self.s, jid) / "out.mp4"
         from .. import music as mu
@@ -314,13 +338,16 @@ class CutWorker:
                 replace_subtitles, job["src_path"], out, self.transcriber(jid), job_dir(self.s, jid) / "tmp",
                 progress, SUBS_MODES[job["mode"]], track, prefs["music_level"], False))
         except Exception as e:  # noqa: BLE001
+            if jid in self.stop:
+                return await self._cancelled(job, msg)
             log.exception("субтитры %s", jid)
             await self._fail(job, f"{type(e).__name__}: {e}", msg, "заменить субтитры в")
             return
         finally:
             tick.cancel()
             shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
-            Path(job["src_path"]).unlink(missing_ok=True)
+            if jid not in self.stop:          # после отмены исходник оставляем — можно выбрать заново
+                Path(job["src_path"]).unlink(missing_ok=True)
         report["kind"] = "subs"
         report["music"] = title
         await self._deliver(job, msg, out, report, f"🔤 {esc(job['filename'])}")
@@ -338,12 +365,14 @@ class CutWorker:
             return
         self.db.update_cut_job(jid, status="running", stage="старт", progress=0)
         head = f"🚀 Делаю «{esc(job['filename'])}»…"
-        msg = await self.bot.tg.send(uid, f"{head}\n{bar(0)} 0%")
+        msg = await self.bot.tg.send(uid, f"{head}\n{bar(0)} 0%", cancel_button(jid))
         if msg:
             self.db.update_cut_job(jid, tg_message_id=msg["message_id"])
         state = {"stage": "старт", "frac": 0.0}
 
         def progress(stage, frac):
+            if jid in self.stop:            # нажали «Отменить» — прерываем работу в этом потоке
+                raise Cancelled()
             state.update(stage=stage, frac=frac)
             self.db.update_cut_job(jid, stage=stage, progress=round(frac, 3))
 
@@ -354,7 +383,8 @@ class CutWorker:
                 cur = (state["stage"], int(state["frac"] * 100))
                 if msg and cur != last:
                     last = cur
-                    await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}")
+                    await self._edit(uid, msg["message_id"], f"{head}\n{bar(state['frac'])} {cur[1]}% — {cur[0]}",
+                                     cancel_button(jid))
 
         prefs = self.db.prefs(uid)
         track, title = (await asyncio.get_running_loop().run_in_executor(
@@ -371,13 +401,16 @@ class CutWorker:
                 cb.run, job["src_path"], out, opts, make_tr, job_dir(self.s, jid) / "tmp", progress,
                 track, prefs["music_level"]))
         except Exception as e:  # noqa: BLE001
+            if jid in self.stop:
+                return await self._cancelled(job, msg)
             log.exception("всё сразу %s", jid)
             await self._fail(job, f"{type(e).__name__}: {e}", msg, "сделать")
             return
         finally:
             tick.cancel()
             shutil.rmtree(job_dir(self.s, jid) / "tmp", ignore_errors=True)
-            Path(job["src_path"]).unlink(missing_ok=True)
+            if jid not in self.stop:          # после отмены исходник оставляем — можно выбрать заново
+                Path(job["src_path"]).unlink(missing_ok=True)
         report["music"] = title
         await self._deliver(job, msg, out, report, f"🚀 {esc(job['filename'])}")
 
@@ -413,10 +446,34 @@ class CutWorker:
         else:
             await self.bot.tg.send(job["user_id"], text)
 
-    async def _edit(self, chat, message_id, text):
+    def cancel(self, job):
+        """Кнопка «Отменить». В очереди — снимаем сразу, в работе — останавливаем при ближайшей
+        проверке (обычно за секунду). Видео не удаляется: можно сразу выбрать другой вариант.
+        -> (ok, текст)."""
+        if job["status"] in ("queued", "confirm"):
+            self.db.update_cut_job(job["id"], status="uploaded", stage="отменено", progress=0, error=None)
+            return True, "Отменил — видео осталось, можно выбрать заново"
+        if job["status"] == "running":
+            self.stop.add(job["id"])
+            return True, "Останавливаю…"
+        return False, "Уже нечего отменять"
+
+    async def _cancelled(self, job, msg):
+        jid = job["id"]
+        (job_dir(self.s, jid) / "out.mp4").unlink(missing_ok=True)
+        self.db.update_cut_job(jid, status="uploaded", stage="отменено", progress=0, error=None, report=None)
+        text = f"⏹ Отменил «{esc(job['filename'])}». Видео осталось — можно выбрать заново."
+        if msg:
+            await self._edit(job["user_id"], msg["message_id"], text)
+        offer = getattr(self.bot, "offer_video", None)
+        if offer and job["src_path"] and Path(job["src_path"]).exists():
+            await offer(job["user_id"], jid, job["filename"])
+
+    async def _edit(self, chat, message_id, text, buttons=None):
         try:
             await self.bot.tg.call("editMessageText", chat_id=chat, message_id=message_id,
-                                   text=text, parse_mode="HTML")
+                                   text=text, parse_mode="HTML",
+                                   **({"reply_markup": {"inline_keyboard": buttons}} if buttons else {}))
         except Exception:  # noqa: BLE001 — «message is not modified» и т.п.
             pass
 

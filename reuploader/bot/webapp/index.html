@@ -1133,7 +1133,8 @@ function renderJob(j) {
     <div class="sub">${CUT_STATUS[j.status] || j.status}${j.stage && j.status !== "done" ? " · " + esc(j.stage) : ""}</div></div></div>`;
   if (["queued", "running"].includes(j.status) || (j.status === "confirm" && !j.estimate)) {
     html += `<div class="row" style="flex-direction:column;align-items:stretch;gap:6px">${progressBar(j.progress || 0)}
-      <div class="sub">${Math.round((j.progress || 0) * 100)}% · результат пришлю и в чат</div></div>`;
+      <div class="sub">${Math.round((j.progress || 0) * 100)}% · результат пришлю и в чат</div>
+      <button class="ghost" onclick="cancelJob(${j.id})">⏹ Отменить</button></div>`;
     cutPoll = setTimeout(async () => { const r = await api("GET", `/api/cut/${j.id}`).catch(() => null); if (r) renderJob(r); }, 2000);
   }
   if (j.status === "failed") html += `<div class="row sub" style="color:var(--danger)">${esc(j.error || "ошибка")}</div>`;
@@ -1213,6 +1214,10 @@ async function runCombo(jid) {
   if (r) { haptic("success"); toast("Делаю — пришлю и в чат"); if (cutMeta) cutMeta.combo = options; renderJob(r); }
 }
 
+async function cancelJob(jid) {
+  const r = await guarded(() => api("POST", `/api/cut/${jid}/cancel`));
+  if (r) { haptic("success"); toast(r.message || "Отменил"); combo = null; renderJob(r); }
+}
 async function runSubs(jid, method) {
   const r = await guarded(() => api("POST", `/api/cut/${jid}/run`, { mode: "subs", method }));
   if (r) { haptic("success"); toast("Меняю субтитры — пришлю и в чат"); renderJob(r); }

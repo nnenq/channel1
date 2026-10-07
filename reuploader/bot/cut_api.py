@@ -23,6 +23,7 @@ def setup(webapp, router):
     router.add_post("/api/cut/{jid}/run", api.run)
     router.add_delete("/api/cut/{jid}", api.delete)
     router.add_post("/api/cut/{jid}/ai", api.decide_ai)
+    router.add_post("/api/cut/{jid}/cancel", api.cancel)
     router.add_get("/api/balance", api.balance)
     router.add_post("/api/balance/topup", api.add_topup)
     router.add_delete("/api/balance/topup/{tid}", api.delete_topup)
@@ -286,6 +287,16 @@ class CutApi:
                 kw["music_track"] = choice
         self.db.set_prefs(request["user"]["id"], **kw)
         return self._music_json(request["user"]["id"])
+
+    async def cancel(self, request):
+        """Кнопка «Отменить»: задача из очереди снимается, идущая — останавливается; видео остаётся."""
+        from .web import ApiError
+
+        job = self._job(request)
+        ok, text = self.w.bot.cut.cancel(job)
+        if not ok:
+            raise ApiError(text)
+        return web.json_response(self._json(self.db.cut_job(job["id"])) | {"message": text})
 
     async def decide_ai(self, request):
         from .web import ApiError

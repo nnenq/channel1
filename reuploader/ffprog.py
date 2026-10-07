@@ -14,10 +14,15 @@ def run(cmd, duration=None, progress=None, cwd=None):
     err = []
     t = threading.Thread(target=lambda: err.append(p.stderr.read()), daemon=True)   # чтобы stderr не забил трубу
     t.start()
-    for line in p.stdout:
-        key, _, val = line.strip().partition("=")
-        if key in ("out_time_us", "out_time_ms") and val.isdigit():
-            progress(max(0.0, min(1.0, int(val) / 1e6 / duration)))
+    try:
+        for line in p.stdout:
+            key, _, val = line.strip().partition("=")
+            if key in ("out_time_us", "out_time_ms") and val.isdigit():
+                progress(max(0.0, min(1.0, int(val) / 1e6 / duration)))
+    except BaseException:          # progress может прервать работу (кнопка «Отменить») — ffmpeg тоже стоп
+        p.kill()
+        p.wait()
+        raise
     rc = p.wait()
     t.join(timeout=5)
     if rc:

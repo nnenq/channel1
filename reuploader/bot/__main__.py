@@ -295,6 +295,10 @@ class BotApp:
         async with self.tg.session.get(url) as r:
             src.write_bytes(await r.read())
         self.db.update_cut_job(jid, src_path=str(src), status="uploaded", size=src.stat().st_size)
+        await self.offer_video(uid, jid, name)
+
+    async def offer_video(self, uid, jid, name):
+        """Сообщение «что сделать с видео»: 🚀 Сделать (как в прошлый раз) / ⚙️ Выбрать."""
         from .. import combo as cb
         from .cut_api import combo_defaults
 
@@ -348,6 +352,21 @@ class BotApp:
                     try:
                         await self.tg.call("editMessageReplyMarkup", chat_id=m["chat"]["id"],
                                            message_id=m["message_id"], reply_markup={"inline_keyboard": []})
+                    except Exception:  # noqa: BLE001
+                        pass
+            await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)
+            return
+        if data.startswith("cancel:"):
+            job = self.db.cut_job(int(data.split(":")[1]))
+            if not job or job["user_id"] != user.get("id"):
+                answer = "Нет доступа"
+            else:
+                ok, answer = self.cut.cancel(job)
+                if ok and job["status"] != "running" and cq.get("message"):
+                    m = cq["message"]
+                    try:
+                        await self.tg.call("editMessageText", chat_id=m["chat"]["id"], message_id=m["message_id"],
+                                           text=f"⏹ Отменил «{esc(job['filename'])}».", parse_mode="HTML")
                     except Exception:  # noqa: BLE001
                         pass
             await self.tg.call("answerCallbackQuery", callback_query_id=cq["id"], text=answer)

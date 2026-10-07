@@ -573,3 +573,45 @@ def test_combo_job_through_queue_and_saved_choice(worker, captioned):
     job = db.cut_job(jid)
     assert job["status"] == "done" and probe(job["out_path"]).height == H              # «кадр как есть»
     assert "🖼 Кадр: Кадр как есть" in sent[-1][0] and "🔤 Наши субтитры" in sent[-1][0] and "🔁 Петля" in sent[-1][0]
+
+
+def test_cancel_button_stops_job_and_keeps_video(worker, captioned):
+    """«⏹ Отменить»: в очереди — снимается сразу; в работе — останавливается, видео остаётся для нового выбора."""
+    import time
+
+    from reuploader.bot.cutjobs import job_dir
+    db, s, w, sent = worker
+    jid = db.create_cut_job(777, "oops.mp4", 1, status="uploaded")
+    d = job_dir(s, jid)
+    d.mkdir(parents=True)
+    shutil.copy(captioned, d / "src.mp4")
+    db.update_cut_job(jid, src_path=str(d / "src.mp4"), mode="combo",
+                      options='{"frame": "erase", "subs": true, "uniq": true, "loop": true}', status="queued")
+    assert w.cancel(db.cut_job(jid))[0] and db.cut_job(jid)["status"] == "uploaded"       # из очереди
+    assert not w.cancel(db.cut_job(jid))[0]                                                # уже нечего
+
+    db.update_cut_job(jid, status="queued")
+    offered = []
+
+    async def offer(uid, j, name):
+        offered.append((uid, j, name))
+    w.bot.offer_video = offer
+
+    async def go():
+        task = asyncio.create_task(w.run(db.cut_job(jid)))
+        while db.cut_job(jid)["status"] != "running" or (db.cut_job(jid)["progress"] or 0) < 0.05:
+            await asyncio.sleep(0.05)
+        t0 = time.time()
+        assert w.cancel(db.cut_job(jid)) == (True, "Останавливаю…")
+        await task
+        return time.time() - t0
+    took = asyncio.run(go())
+    job = db.cut_job(jid)
+    assert job["status"] == "uploaded" and job["stage"] == "отменено" and took < 15
+    assert (d / "src.mp4").exists() and not (d / "out.mp4").exists()                      # видео осталось
+    assert sent[-1][1] == [[{"text": "⏹ Отменить", "callback_data": f"cancel:{jid}"}]]     # кнопка в прогрессе
+    assert offered == [(777, jid, "oops.mp4")] and jid not in w.stop
+    # после отмены можно запустить снова — и всё доделывается
+    db.update_cut_job(jid, status="queued")
+    asyncio.run(w.run(db.cut_job(jid)))
+    assert db.cut_job(jid)["status"] == "done"

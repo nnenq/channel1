@@ -21,6 +21,7 @@ MAX_MB = 15
 # лёгкое улучшение картинки: чуть ярче цвета и контраст, немного резкости (до субтитров)
 ENHANCE = "eq=saturation=1.08:contrast=1.03,unsharp=5:5:0.35:5:5:0"
 LOUD = "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000"
+LOOP_FADE = 0.3                                         # затухание музыки на стыке «петли»
 EVEN = "loudnorm=I=-16:TP=-2,aresample=48000"          # общая громкость голоса и трека перед смешиванием
 
 
@@ -46,22 +47,26 @@ def music_input(path, start=0.0):
     return ["-stream_loop", "-1", "-ss", f"{start:.2f}", "-i", str(Path(path).resolve())]
 
 
-def audio_graph(voice, music, duration, level="mid"):
+def audio_graph(voice, music, duration, level="mid", loop=False):
     """Звуковая часть filter_complex -> строка, результат в [a].
 
-    voice — метка звука ролика ("0:a") или None (звука нет); music — номер входа с треком или None."""
+    voice — метка звука ролика ("0:a") или None (звука нет); music — номер входа с треком или None.
+    loop — ролик-«петля»: музыка лишь чуть затухает на стыке конца и начала (а не 1,5–2 с),
+    и в самом конце звук гаснет за доли секунды — без щелчка при повторе."""
     vol = LEVELS.get(level, LEVELS["mid"])
-    end = max(0.0, duration - 2.0)
+    fin, fout = (LOOP_FADE, LOOP_FADE) if loop else (1.5, 2.0)
+    end = max(0.0, duration - fout)
+    tail = f",afade=t=out:st={max(0.0, duration - 0.06):.3f}:d=0.06" if loop else ""
     if music is None:
-        return f"[{voice}]aresample=48000,{LOUD}[a]" if voice else None
-    mus = (f"[{music}:a]aresample=48000,{EVEN},volume={vol},afade=t=in:st=0:d=1.5,"
-           f"afade=t=out:st={end:.2f}:d=2,atrim=0:{duration:.2f}")
+        return f"[{voice}]aresample=48000,{LOUD}{tail}[a]" if voice else None
+    mus = (f"[{music}:a]aresample=48000,{EVEN},volume={vol},afade=t=in:st=0:d={fin},"
+           f"afade=t=out:st={end:.2f}:d={fout},atrim=0:{duration:.2f}")
     if not voice:
-        return mus + f",{LOUD}[a]"
+        return mus + f",{LOUD}{tail}[a]"
     return (f"[{voice}]aresample=48000,{EVEN},asplit=2[vo][sc];{mus}[mu];"
             # музыка чуть тише, пока звучит голос, и возвращается в паузах (мягко — не «проваливается»)
             "[mu][sc]sidechaincompress=threshold=0.1:ratio=2:attack=20:release=300[md];"
-            f"[vo][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{LOUD}[a]")
+            f"[vo][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,{LOUD}{tail}[a]")
 
 
 BUILTIN = "builtin:"

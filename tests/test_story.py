@@ -109,9 +109,14 @@ def test_build_story_renders_vertical_video(media, tmp_path):
                       lambda p: list(voice_words), tmp_path / "w")
     info = probe(tmp_path / "out.mp4")
     assert (info.width, info.height) == (1080, 1920) and info.audio_streams == 1
-    assert info.duration == pytest.approx(probe(d / "voice.ogg").duration, abs=0.3)
+    # «петля»: тишина в конце озвучки убрана — ролик кончается сразу после последнего слова
+    assert voice_words[-1].end < info.duration <= probe(d / "voice.ogg").duration + 0.1
+    assert info.duration == pytest.approx(voice_words[-1].end + 0.25, abs=0.3)
     assert "ЧТО БЫЛО ДАЛЬШЕ" in (tmp_path / "w" / "story.ass").read_text(encoding="utf-8")
     assert rep["lines"] == len(script["lines"])
+    build_story(d / "movie.mp4", d / "voice.ogg", script, tmp_path / "plain.mp4", lambda p: list(voice_words),
+                tmp_path / "w2", loop=False)
+    assert probe(tmp_path / "plain.mp4").duration == pytest.approx(probe(d / "voice.ogg").duration, abs=0.3)
 
 
 # ---------- через бота ----------

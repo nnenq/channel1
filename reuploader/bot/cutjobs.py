@@ -92,6 +92,14 @@ def report_text(report):
         elif t:
             lines.append(f"✂️ Длина: {t['before']:.0f} с → {t['after']:.0f} с" if t.get("after") else
                          "✂️ Ролик уже короче — длину не менял")
+        lp = report.get("loop")
+        if lp:
+            what = "конец перетекает в начало"
+            if lp.get("dropped"):
+                what += f", убрал концовку «{lp['dropped'][:80]}»"
+            elif lp.get("cut", 0) >= 0.5:
+                what += f", убрал {lp['cut']:.1f} с тишины в конце"
+            lines.append(f"🔁 Петля: {what}")
         if report.get("music"):
             lines.append(f"🎵 Музыка: {report['music']}")
         return "\n".join(lines)

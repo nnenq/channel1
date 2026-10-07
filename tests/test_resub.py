@@ -500,11 +500,11 @@ def test_combo_options_validation():
     from reuploader import combo
     assert combo.clean({}) == combo.DEFAULT
     o = combo.clean({"frame": "erase", "subs": 0, "uniq": 1, "trim": " 0:58 ", "junk": 1})
-    assert o == {"frame": "erase", "subs": False, "uniq": True, "trim": "0:58"}
+    assert o == {"frame": "erase", "subs": False, "uniq": True, "trim": "0:58", "loop": True}
     for bad in ({"frame": "hack"}, {"trim": "abc"}):
         with pytest.raises(ValueError):
             combo.clean(bad)
-    assert combo.describe(combo.DEFAULT, music=True) == "Как в CapCut · наши субтитры · уникализация · музыка"
+    assert combo.describe(combo.DEFAULT, music=True) == "Как в CapCut · наши субтитры · уникализация · петля · музыка"
 
 
 @pytest.fixture(scope="module")
@@ -567,9 +567,9 @@ def test_combo_job_through_queue_and_saved_choice(worker, captioned):
             return bad, r, lst
     bad, r, lst = asyncio.run(go())
     assert bad == 400 and r["mode"] == "combo" and r["status"] == "queued"
-    assert lst["combo"] == {"frame": "keep", "subs": True, "uniq": False, "trim": ""}   # выбор запомнен
+    assert lst["combo"] == {"frame": "keep", "subs": True, "uniq": False, "trim": "", "loop": True}   # выбор запомнен
     db.set_prefs(777, music_on=0)
     asyncio.run(w.run(db.cut_job(jid)))
     job = db.cut_job(jid)
     assert job["status"] == "done" and probe(job["out_path"]).height == H              # «кадр как есть»
-    assert "🖼 Кадр: Кадр как есть" in sent[-1][0] and "🔤 Наши субтитры" in sent[-1][0]
+    assert "🖼 Кадр: Кадр как есть" in sent[-1][0] and "🔤 Наши субтитры" in sent[-1][0] and "🔁 Петля" in sent[-1][0]

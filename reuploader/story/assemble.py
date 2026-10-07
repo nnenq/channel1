@@ -108,9 +108,9 @@ def plan_clips(lines, spans, src_dur, cuts=None):
     return clips
 
 
-def build_filter(n, subs_name=None, mirror=False):
+def build_filter(n, subs_name=None, mirror=False, loop=""):
     """Склейка n кусков (входы 0..n-1) и вертикальная компоновка. mirror — отразить кадры по горизонтали
-    (субтитры накладываются после — они не зеркалятся)."""
+    (субтитры накладываются после — они не зеркалятся). loop — хвост «петли» (reuploader.loop)."""
     parts = "".join(f"[{i}:v]setpts=PTS-STARTPTS,fps=30,scale=1280:-2,setsar=1[c{i}];" for i in range(n))
     cat = "".join(f"[c{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=0" + (",hflip" if mirror else "") + "[cat];"
     # кадр по центру: 4:3 из середины (как в популярных Shorts), фон — тот же кадр, размытый
@@ -119,15 +119,18 @@ def build_filter(n, subs_name=None, mirror=False):
               # фон размываем уменьшенным в 8 раз и растягиваем — на вид то же, а быстрее
               f"[bg]scale={W // 8}:{H // 8}:force_original_aspect_ratio=increase,crop={W // 8}:{H // 8},"
               f"gblur=sigma=5,eq=brightness=-0.08,scale={W}:{H}:flags=bicubic[b];"
-              "[b][f]overlay=0:(H-h)/2")
+              "[b][f]overlay=0:(H-h)/2" + (loop or ""))
     tail = (f",ass={subs_name}" if subs_name else "") + ",format=yuv420p[v]"
     return parts + cat + layout + tail
 
 
-def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=False, music=None, music_level="mid"):
+def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=False, music=None, music_level="mid",
+           end=None):
     """Собирает ролик. clips — [(start, dur)]; voice — запись голоса; subs — .ass (или None);
-    music — фоновый трек (тише голоса, см. reuploader.music) или None."""
+    music — фоновый трек (тише голоса, см. reuploader.music) или None;
+    end — «петля»: ролик кончается здесь, и последний кадр перетекает в первый (см. reuploader.loop)."""
     from .. import music as mu
+    from ..loop import video_filter
 
     src, voice, out = str(Path(src).resolve()), str(Path(voice).resolve()), Path(out).resolve()
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error"]
@@ -141,15 +144,20 @@ def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=Fals
         cwd, subs_name = subs.parent, subs.name
     n = len(clips)
     total = sum(d for _, d in clips)
+    if end:
+        total = min(total, end)
     if music:
         cmd += mu.music_input(music, mu.start_offset(probe(music).duration, total))
-        sound = mu.audio_graph(f"{n}:a", n + 1, total, music_level)
+        sound = mu.audio_graph(f"{n}:a", n + 1, total, music_level, loop=bool(end))
+    elif end:
+        sound = mu.audio_graph(f"{n}:a", None, total, loop=True)
     else:
         sound = f"[{n}:a]loudnorm=I=-15:TP=-1.5:LRA=11,aresample=48000[a]"
-    fc = build_filter(n, subs_name, mirror) + ";" + sound
+    fc = build_filter(n, subs_name, mirror, video_filter(total, 30) if end else "") + ";" + sound
     cmd += ["-filter_complex", fc, "-map", "[v]", "-map", "[a]",
             *video_args(crf),
-            "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart",
+            "-c:a", "aac", "-b:a", "160k", "-shortest", *(["-t", f"{total:.3f}"] if end else []),
+            "-movflags", "+faststart",
             "-map_metadata", "-1", str(out)]
     from .. import ffprog
 
@@ -158,7 +166,7 @@ def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=Fals
 
 
 def build_story(src, voice, script, out, transcriber, work_dir, progress=None, fast_cuts=True, mirror=False,
-                music=None, music_level="mid"):
+                music=None, music_level="mid", loop=True):
     """Всё вместе. -> dict(duration, lines, words) для отчёта.
     progress(этап, доля 0..1) — распознавание голоса 0–35 %, сборка видео 35–100 %."""
     from ..subtitles import to_ass
@@ -188,7 +196,12 @@ def build_story(src, voice, script, out, transcriber, work_dir, progress=None, f
     clips = plan_clips(lines, spans, probe(src).duration, cuts if fast_cuts else None)
     subs = to_ass(words, W, H, work / "story.ass", overlay=script.get("overlay") or None,
                   overlay_until=vinfo.duration)
-    render(src, voice, clips, out, subs, mirror=mirror, music=music, music_level=music_level,
+    end = None
+    if loop:
+        from ..loop import plan_end, quiet_tail
+
+        end = plan_end(words, vinfo.duration, quiet_tail(voice, vinfo.duration))[0]
+    render(src, voice, clips, out, subs, mirror=mirror, music=music, music_level=music_level, end=end,
            progress=(lambda f: progress("собираю видео", 0.35 + 0.65 * f)) if progress else None)
     return {"duration": round(vinfo.duration, 1), "lines": len(lines), "words": len(words),
             "spans": spans, "clips": clips}

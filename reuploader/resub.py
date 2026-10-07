@@ -177,11 +177,21 @@ def plan(lay):
     return lay
 
 
-def _tail(subs_name=None, enhance=False):
+def _tail(subs_name=None, enhance=False, loop=""):
+    """loop — хвост «петли» (reuploader.loop.video_filter): конец перетекает в первый кадр."""
     from .music import ENHANCE
 
-    return (("," + ENHANCE if enhance else "") + (f",ass={subs_name}" if subs_name else "")
+    return ((loop or "") + ("," + ENHANCE if enhance else "") + (f",ass={subs_name}" if subs_name else "")
             + ",setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709,format=yuv420p[v]")
+
+
+def _ending(info, look):
+    """-> (длина готового ролика, хвост фильтра «петли» или "")."""
+    from .loop import video_filter
+
+    look = look or {}
+    end = min(info.duration, look.get("end") or info.duration)
+    return end, (video_filter(end, min(60.0, info.fps or 30.0)) if look.get("loop") else "")
 
 
 def _sound(voice, music_idx, duration, look):
@@ -190,11 +200,12 @@ def _sound(voice, music_idx, duration, look):
 
     look = look or {}
     track = look.get("music")
-    graph = mu.audio_graph(voice, music_idx if track else None, duration, look.get("level", "mid"))
+    graph = mu.audio_graph(voice, music_idx if track else None, duration, look.get("level", "mid"),
+                           loop=bool(look.get("loop")))
     return (mu.music_input(track, look.get("start", 0.0)) if track else []), graph
 
 
-def build_filter(lay, subs_name=None, enhance=False, head=""):
+def build_filter(lay, subs_name=None, enhance=False, head="", loop=""):
     y0, y1 = lay.keep
     chain = f"[0:v]{head}crop={lay.width // 2 * 2}:{y1 - y0}:0:{y0},setsar=1"
     parts = []
@@ -214,7 +225,7 @@ def build_filter(lay, subs_name=None, enhance=False, head=""):
           # размытый фон: размываем копию в 8 раз меньше и растягиваем — на вид то же, а в 2,5 раза быстрее
           f"[bg]scale={OUT_W // 8}:{OUT_H // 8}:force_original_aspect_ratio=increase,crop={OUT_W // 8}:{OUT_H // 8},"
           f"gblur=sigma=5,eq=brightness=-0.06,scale={OUT_W}:{OUT_H}:flags=bicubic[b];[b][fg]overlay=0:(H-h)/2")
-    return fc + _tail(subs_name, enhance)
+    return fc + _tail(subs_name, enhance, loop)
 
 
 def caption_strip(lay):
@@ -234,7 +245,7 @@ def caption_strip(lay):
     return a // 2 * 2, b // 2 * 2, size
 
 
-def strip_filter(lay, strips, subs_name=None, enhance=False, head=""):
+def strip_filter(lay, strips, subs_name=None, enhance=False, head="", loop=""):
     """Размытые полосы на всю ширину поверх старого текста; размер кадра не меняется."""
     w, h = lay.width // 2 * 2, lay.height // 2 * 2
     chain = f"[0:v]{head}crop={w}:{h}:0:0,setsar=1"
@@ -248,7 +259,7 @@ def strip_filter(lay, strips, subs_name=None, enhance=False, head=""):
                       f"[{prev}][b{i}]overlay=0:{a}[m{i}];")
             prev = f"m{i}"
         chain += f"[{prev}]null"
-    return chain + _tail(subs_name, enhance)
+    return chain + _tail(subs_name, enhance, loop)
 
 
 def _components(band, width, dark_thr=90, frac=0.55, contrast=False):
@@ -404,29 +415,31 @@ def erase_render(src, out, lay, bands, subs=None, progress=None, look=None, layo
     info = probe(src)
     w, h = lay.width, lay.height
     frame_size = w * h * 3
-    total = max(1, int(info.duration * min(60.0, info.fps or 30.0)))
+    end, loop = _ending(info, look)
+    total = max(1, int(end * min(60.0, info.fps or 30.0)))
     src, out = str(Path(src).resolve()), Path(out).resolve()
     cwd = subs_name = None
     if subs:
         subs = Path(subs).resolve()
         cwd, subs_name = subs.parent, subs.name
-    fc = (build_filter(layout, subs_name, (look or {}).get("enhance")) if layout else
-          f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance")))
+    fc = (build_filter(layout, subs_name, (look or {}).get("enhance"), loop=loop) if layout else
+          f"[0:v]crop={w // 2 * 2}:{h // 2 * 2}:0:0" + _tail(subs_name, (look or {}).get("enhance"), loop))
     geos = learn_geometry(src, info, bands, w, h) if bands else []
     bands, geos = widen(bands, geos, h)
-    extra, graph = _sound("1:a" if info.audio_streams else None, 2, info.duration, look)
+    extra, graph = _sound("1:a" if info.audio_streams else None, 2, end, look)
     if graph:
         fc += ";" + graph
     # ровная частота кадров: видео с телефона часто «плавающее» (VFR) — иначе картинка уезжает от звука
     fps = min(60.0, info.fps or 30.0)
-    dec = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-v", "error", "-i", src, "-an", "-vf", f"{pre(info)}fps={fps:.3f}",
+    dec = subprocess.Popen([ffmpeg_exe(), "-hide_banner", "-v", "error", "-i", src, "-t", f"{end:.3f}", "-an",
+                            "-vf", f"{pre(info)}fps={fps:.3f}",
                             "-f", "rawvideo", "-pix_fmt", "bgr24", "-"], stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE)
     enc = subprocess.Popen([ffmpeg_exe(), "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
                             "-s", f"{w}x{h}", "-r", f"{fps:.3f}", "-i", "-", "-i", src, *extra,
                             "-filter_complex", fc, "-map", "[v]", "-map", "[a]" if graph else "1:a?",
                             *video_args(21), "-c:a", "aac", "-b:a", "160k",
-                            "-t", f"{info.duration:.3f}", "-movflags", "+faststart", *SDR_TAGS,
+                            "-t", f"{end:.3f}", "-movflags", "+faststart", *SDR_TAGS,
                             "-map_metadata", "-1", str(out)], stdin=subprocess.PIPE, cwd=cwd)
     done = 0
     window = {}                 # номер кадра -> (кадр, маски полос). Маска кадра — объединение масок
@@ -506,23 +519,26 @@ def render(src, out, lay, subs=None, progress=None, strips=None, look=None):
         cwd, subs_name = subs.parent, subs.name
     enhance = (look or {}).get("enhance")
     info = probe(src)
-    fc = (strip_filter(lay, strips, subs_name, enhance, pre(info)) if strips is not None
-          else build_filter(lay, subs_name, enhance, pre(info)))
-    extra, graph = _sound("0:a" if info.audio_streams else None, 1, info.duration, look)
+    end, loop = _ending(info, look)
+    fc = (strip_filter(lay, strips, subs_name, enhance, pre(info), loop) if strips is not None
+          else build_filter(lay, subs_name, enhance, pre(info), loop))
+    extra, graph = _sound("0:a" if info.audio_streams else None, 1, end, look)
     if graph:
         fc += ";" + graph
     cmd = [ffmpeg_exe(), "-y", "-hide_banner", "-loglevel", "error", "-i", src, *extra,
            "-filter_complex", fc, "-map", "[v]", "-map", "[a]" if graph else "0:a?",
            *video_args(21), "-c:a", "aac", "-b:a", "160k",
-           "-t", f"{info.duration:.3f}", "-movflags", "+faststart", *SDR_TAGS, "-map_metadata", "-1", str(out)]
-    ffprog.run(cmd, info.duration, progress, cwd=cwd)
+           "-t", f"{end:.3f}", "-movflags", "+faststart", *SDR_TAGS, "-map_metadata", "-1", str(out)]
+    ffprog.run(cmd, end, progress, cwd=cwd)
     return out
 
 
 def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="erase", music=None,
-                      music_level="mid", enhance=False):
+                      music_level="mid", enhance=False, loop=False, subs=True):
     """Всё вместе. progress(этап, доля). music — путь к фоновому треку (или None),
-    music_level — low|mid|high, enhance — чуть ярче цвета и резкость. -> dict для отчёта."""
+    music_level — low|mid|high, enhance — чуть ярче цвета и резкость, loop — «петля» (конец без паузы
+    и призывов, картинка перетекает в первый кадр, см. reuploader.loop), subs=False — речь распознаётся
+    только для «петли», наши субтитры не вшиваются. -> dict для отчёта."""
     from .music import start_offset
     from .subtitles import to_ass
 
@@ -533,10 +549,21 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
     lay = analyze(src)
     say("распознаю речь", 0.1)
     words = transcriber(src)
-    build = lambda f: say("собираю видео", 0.4 + 0.6 * f)   # noqa: E731
     look = {"enhance": enhance, "level": music_level}
+    duration = probe(src).duration
+    loop_rep = None
+    if loop:
+        from .loop import plan_end, quiet_tail
+
+        end, dropped = plan_end(words, duration, quiet_tail(src, duration) if probe(src).audio_streams else None)
+        look.update(loop=True, end=end)
+        loop_rep = {"cut": round(max(0.0, duration - end), 1), "dropped": dropped}
+        words = [w for w in words if w.start < end - 0.05]
+    if not subs:
+        words = []
+    build = lambda f: say("собираю видео", 0.4 + 0.6 * f)   # noqa: E731
     if music:
-        look.update(music=str(music), start=start_offset(probe(music).duration, probe(src).duration))
+        look.update(music=str(music), start=start_offset(probe(music).duration, duration))
     if method == "capcut":
         # как в CapCut: «Кадрирование» — только картинка мультика (надписи на полях сверху/снизу
         # отрезаются), «Холст: размытие» — вертикальный кадр на размытом фоне; надписи поверх
@@ -591,4 +618,4 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
     check_video(out)
     return {"mode": mode, "method": method, "bands": lay.bands, "content": lay.content, "keep": lay.keep,
             "words": len(words), "size": [lay.width, lay.height],
-            "music": Path(music).name if music else None, "enhance": bool(enhance)}
+            "music": Path(music).name if music else None, "enhance": bool(enhance), "loop": loop_rep}

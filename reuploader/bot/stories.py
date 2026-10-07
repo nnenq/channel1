@@ -307,7 +307,8 @@ class StoryWorker:
         try:
             await asyncio.get_running_loop().run_in_executor(None, partial(
                 build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}", build_rep,
-                mirror=bool(story["mirror"]), music=track, music_level=prefs["music_level"]))
+                mirror=bool(story["mirror"]), music=track, music_level=prefs["music_level"],
+                loop=bool(story["loop"])))
         except Exception as e:  # noqa: BLE001
             log.exception("сборка %s", item["id"])
             self.db.update_story_script(item["id"], status="failed", error=f"{type(e).__name__}: {e}"[:500])
@@ -388,7 +389,7 @@ class StoryApi:
                             "why": body["why"], "text": "\n".join(ln["text"] for ln in body["lines"]),
                             "link": f"/sdl/{it['dl_token']}" if it["dl_token"] else None})
         return {k: st[k] for k in ("id", "status", "stage", "progress", "filename", "size", "duration", "kind",
-                                   "lang", "count", "seconds", "topic", "error", "ai_state", "mirror")} | {
+                                   "lang", "count", "seconds", "topic", "error", "ai_state", "mirror", "loop")} | {
             "uploaded": uploaded, "scripts": scripts,
             "has_transcript": (story_dir(self.s, st["id"]) / "words.json").exists(),
             "estimate": json.loads(st["estimate"]) if st["estimate"] else None}
@@ -481,7 +482,7 @@ class StoryApi:
         voice = str(body.get("tts_voice") or "")
         voice = voice if VOICE_ID.match(voice) else None
         uid = request["user"]["id"]
-        self.db.update_story(st["id"], mirror=int(bool(body.get("mirror"))),
+        self.db.update_story(st["id"], mirror=int(bool(body.get("mirror"))), loop=int(bool(body.get("loop", True))),
                              tts=int(bool(body.get("tts")) and self.worker.tts_available(uid)),
                              tts_voice=voice)
         self.db.update_story(st["id"], status="queued", stage="в очереди", progress=0, kind=kind, lang=lang,

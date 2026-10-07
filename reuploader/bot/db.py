@@ -240,6 +240,7 @@ MIGRATIONS = [
     ("story_scripts", "progress", "REAL"),
     ("story_scripts", "stage", "TEXT"),
     ("stories", "mirror", "INTEGER NOT NULL DEFAULT 0"),   # отзеркалить кадры мультфильма
+    ("stories", "loop", "INTEGER NOT NULL DEFAULT 1"),     # «петля»: конец перетекает в начало
     ("user_prefs", "music_track", "TEXT NOT NULL DEFAULT ''"),   # "" — случайный, builtin:<имя> или свой файл
     ("user_prefs", "combo", "TEXT NOT NULL DEFAULT ''"),         # последний выбор «что сделать с видео» (JSON)
     ("cut_jobs", "options", "TEXT"),                              # выбор для задачи «всё сразу» (JSON)

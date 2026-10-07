@@ -4,7 +4,8 @@ options:
   frame — capcut | erase | strip | crop | keep (см. reuploader.resub);
   subs  — вшить наши анимированные субтитры по речи;
   uniq  — уникализация (лёгкий зум и наклон, цвет, скорость — у каждого ролика свои);
-  trim  — "" (длину не менять) или «0:58» / «1:35-2:35».
+  trim  — "" (длину не менять) или «0:58» / «1:35-2:35»;
+  loop  — «петля»: конец без паузы и призывов, картинка перетекает в первый кадр (reuploader.loop).
 Музыка — по настройкам пользователя (передаётся снаружи).
 """
 import shutil
@@ -17,7 +18,7 @@ FRAMES = {
     "crop": "Обрезать полосу",
     "keep": "Кадр как есть",
 }
-DEFAULT = {"frame": "capcut", "subs": True, "uniq": True, "trim": ""}
+DEFAULT = {"frame": "capcut", "subs": True, "uniq": True, "trim": "", "loop": True}
 
 
 def clean(opts):
@@ -28,7 +29,7 @@ def clean(opts):
     o.update({k: v for k, v in (opts or {}).items() if k in DEFAULT})
     if o["frame"] not in FRAMES:
         raise ValueError("Неизвестный вариант кадра.")
-    o["subs"], o["uniq"] = bool(o["subs"]), bool(o["uniq"])
+    o["subs"], o["uniq"], o["loop"] = bool(o["subs"]), bool(o["uniq"]), bool(o["loop"])
     o["trim"] = str(o["trim"] or "").strip()
     if o["trim"]:
         parse_range(o["trim"])                       # ValueError с текстом, если формат не тот
@@ -40,6 +41,8 @@ def describe(o, music=None):
     parts.append("наши субтитры" if o["subs"] else "без наших субтитров")
     if o["uniq"]:
         parts.append("уникализация")
+    if o["loop"]:
+        parts.append("петля")
     if music:
         parts.append("музыка")
     if o["trim"]:
@@ -93,10 +96,11 @@ def run(src, out, o, make_transcriber, work_dir, progress=None, music=None, musi
         apply_effects(cur, uq, fx, progress=lambda f: step("уникализирую", f))
         report["uniq"] = {k: fx.get(k) for k in ("zoom", "rotate_deg", "tempo", "color")}
         cur = uq
-    tr = make_transcriber(work / "words_final.json") if o["subs"] else (lambda p: [])
+    # речь нужна и для «петли»: по ней видно, где закончилось последнее слово
+    tr = make_transcriber(work / "words_final.json") if o["subs"] or o["loop"] else (lambda p: [])
     step = sub("frame")
     rep = replace_subtitles(cur, out, tr, work / "rs", progress=lambda st, f: step(st, f), method=o["frame"],
-                            music=music, music_level=music_level)
-    report.update(frame=rep["mode"], words=rep["words"], music=rep.get("music"))
+                            music=music, music_level=music_level, loop=o["loop"], subs=o["subs"])
+    report.update(frame=rep["mode"], words=rep["words"], music=rep.get("music"), loop=rep.get("loop"))
     shutil.rmtree(work / "sc", ignore_errors=True)
     return report

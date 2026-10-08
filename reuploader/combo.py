@@ -50,8 +50,9 @@ def describe(o, music=None):
     return " · ".join(parts)
 
 
-def run(src, out, o, make_transcriber, work_dir, progress=None, music=None, music_level="mid"):
-    """Делает всё по выбору. make_transcriber(путь_кэша) -> transcriber. -> отчёт (dict)."""
+def run(src, out, o, make_transcriber, work_dir, progress=None, music=None, music_level="mid", subs_pos=0):
+    """Делает всё по выбору. make_transcriber(путь_кэша) -> transcriber. subs_pos — где наши субтитры
+    (% высоты от верха, 0 — авто). -> отчёт (dict)."""
     from .effects import DEFAULT_EFFECTS, apply_effects, randomize
     from .resub import replace_subtitles
     from .smartcut import smart_cut
@@ -100,7 +101,9 @@ def run(src, out, o, make_transcriber, work_dir, progress=None, music=None, musi
     tr = make_transcriber(work / "words_final.json") if o["subs"] or o["loop"] else (lambda p: [])
     step = sub("frame")
     rep = replace_subtitles(cur, out, tr, work / "rs", progress=lambda st, f: step(st, f), method=o["frame"],
-                            music=music, music_level=music_level, loop=o["loop"], subs=o["subs"])
-    report.update(frame=rep["mode"], words=rep["words"], music=rep.get("music"), loop=rep.get("loop"))
+                            music=music, music_level=music_level, loop=o["loop"], subs=o["subs"],
+                            subs_pos=subs_pos)
+    report.update(frame=rep["mode"], words=rep["words"], music=rep.get("music"), loop=rep.get("loop"),
+                  subs_pos=rep.get("subs_pos"))
     shutil.rmtree(work / "sc", ignore_errors=True)
     return report

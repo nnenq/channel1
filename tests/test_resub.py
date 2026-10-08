@@ -650,3 +650,60 @@ def test_share_link_for_claude(worker, captioned):
     assert st == 200 and ctype == "video/mp4" and body == (d / "src.mp4").read_bytes()
     assert part == 206 and bad == 404 and expired == 404
     assert r["url"] in sent[-1][0] and "Ссылка для Claude" in sent[-1][0]          # и в чат
+
+
+def test_subtitle_position_choice(worker, captioned, tmp_path):
+    """«📍 Где субтитры»: % от верха кадра; 0 — авто. Настройка общая, сохраняется и доходит до видео."""
+    import numpy as np
+    from aiohttp.test_utils import TestClient, TestServer
+    from reuploader.bot.cutjobs import job_dir
+    from reuploader.bot.web import WebApp
+    from reuploader.subtitles import clean_pos
+    from tests.test_e2e_helpers import init_data
+    assert [clean_pos(x) for x in (None, "", 0, -3, 2, 30.4, 95, "abc", "50")] == [0, 0, 0, 0, 8, 30, 88, 0, 50]
+    # текст действительно встаёт туда, куда выбрали
+    words = [Word(0.0, 0.5, "SPONGEBOB"), Word(0.5, 1.0, "OPENED"), Word(1.0, 1.5, "FREEZER.")]
+    for pos in (15, 50, 80):
+        to_ass(words, 1080, 1920, tmp_path / f"p{pos}.ass", pos=pos)
+        raw = subprocess.run([ffmpeg_exe(), "-v", "error", "-f", "lavfi", "-i", "color=black:s=1080x1920:d=1.2",
+                              "-vf", f"ass=p{pos}.ass", "-ss", "1.0", "-frames:v", "1", "-f", "rawvideo",
+                              "-pix_fmt", "gray", "-"], capture_output=True, cwd=tmp_path).stdout
+        rows = np.where((np.frombuffer(raw, np.uint8)[-1080 * 1920:].reshape(1920, 1080) > 200).sum(1) > 3)[0]
+        assert abs((rows.min() + rows.max()) / 2 / 1920 * 100 - pos) < 1.5
+
+    db, s, w, sent = worker
+    bot = SimpleNamespace(owner_id=777, has_access=lambda u: u == 777, app_key="k", cut=w, stories=SimpleNamespace())
+
+    async def go():
+        async with TestClient(TestServer(WebApp(db, s, SimpleNamespace(poke=lambda: None), bot).build())) as c:
+            h = {"X-Init-Data": init_data(777)}
+            out = []
+            for v in (150, "abc", -5, 30):
+                out.append((await (await c.patch("/api/music", json={"subs_pos": v}, headers=h)).json())["subs_pos"])
+            return out
+    assert asyncio.run(go()) == [88, 0, 0, 30] and db.prefs(777)["subs_pos"] == 30
+
+    # задача из очереди берёт настройку: субтитры «как в CapCut» на 30 % вместо стандартных ~70 %
+    jid = db.create_cut_job(777, "pos.mp4", 1, status="uploaded")
+    d = job_dir(s, jid)
+    d.mkdir(parents=True)
+    shutil.copy(captioned, d / "src.mp4")
+    db.update_cut_job(jid, src_path=str(d / "src.mp4"), mode="combo", status="queued",
+                      options='{"frame": "capcut", "subs": true, "uniq": false, "loop": false}')
+    db.set_prefs(777, music_on=0)
+    seen = {}
+    from reuploader import subtitles
+
+    orig = subtitles.to_ass
+
+    def spy(*a, **k):
+        seen.update(k)
+        return orig(*a, **k)
+    subtitles.to_ass = spy
+    try:
+        asyncio.run(w.run(db.cut_job(jid)))
+    finally:
+        subtitles.to_ass = orig
+    job = db.cut_job(jid)
+    assert job["status"] == "done" and seen.get("pos") == 30
+    assert "на 30% от верха" in sent[-1][0]

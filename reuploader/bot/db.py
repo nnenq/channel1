@@ -243,6 +243,7 @@ MIGRATIONS = [
     ("stories", "loop", "INTEGER NOT NULL DEFAULT 1"),     # «петля»: конец перетекает в начало
     ("user_prefs", "music_track", "TEXT NOT NULL DEFAULT ''"),   # "" — случайный, builtin:<имя> или свой файл
     ("user_prefs", "combo", "TEXT NOT NULL DEFAULT ''"),         # последний выбор «что сделать с видео» (JSON)
+    ("user_prefs", "subs_pos", "INTEGER NOT NULL DEFAULT 0"),    # где наши субтитры: 0 — авто, иначе % от верха
     ("cut_jobs", "options", "TEXT"),                              # выбор для задачи «всё сразу» (JSON)
     ("cut_jobs", "share_token", "TEXT"),                          # «🔗 Ссылка для Claude»: открытая ссылка на файл
     ("cut_jobs", "share_what", "TEXT"),                           # src — исходное видео, out — готовое
@@ -502,22 +503,24 @@ class DB:
         self.x("DELETE FROM users WHERE id = ?", uid)
 
     # --- оформление роликов ---
-    PREF_DEFAULTS = {"music_on": 1, "music_level": "mid", "enhance": 1, "music_track": "", "combo": ""}
+    PREF_DEFAULTS = {"music_on": 1, "music_level": "mid", "enhance": 1, "music_track": "", "combo": "", "subs_pos": 0}
 
     def prefs(self, uid):
-        r = self.one("SELECT music_on, music_level, enhance, music_track, combo FROM user_prefs WHERE user_id = ?",
-                     uid)
+        r = self.one("SELECT music_on, music_level, enhance, music_track, combo, subs_pos FROM user_prefs "
+                     "WHERE user_id = ?", uid)
         return dict(r) if r else dict(self.PREF_DEFAULTS)
 
     def set_prefs(self, uid, **kw):
         cur = self.prefs(uid) | {k: v for k, v in kw.items() if k in self.PREF_DEFAULTS}
-        self.x("""INSERT INTO user_prefs(user_id, music_on, music_level, enhance, music_track, combo, updated_at)
-                  VALUES(?, ?, ?, ?, ?, ?, ?)
+        self.x("""INSERT INTO user_prefs(user_id, music_on, music_level, enhance, music_track, combo, subs_pos,
+                                         updated_at)
+                  VALUES(?, ?, ?, ?, ?, ?, ?, ?)
                   ON CONFLICT(user_id) DO UPDATE SET music_on = excluded.music_on,
                     music_level = excluded.music_level, enhance = excluded.enhance,
-                    music_track = excluded.music_track, combo = excluded.combo, updated_at = excluded.updated_at""",
+                    music_track = excluded.music_track, combo = excluded.combo, subs_pos = excluded.subs_pos,
+                    updated_at = excluded.updated_at""",
                uid, int(cur["music_on"]), cur["music_level"], int(cur["enhance"]), cur["music_track"] or "",
-               cur["combo"] or "", iso(utcnow()))
+               cur["combo"] or "", int(cur["subs_pos"] or 0), iso(utcnow()))
         return self.prefs(uid)
 
     # --- личный ключ ElevenLabs ---

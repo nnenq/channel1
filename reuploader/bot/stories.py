@@ -308,7 +308,7 @@ class StoryWorker:
             await asyncio.get_running_loop().run_in_executor(None, partial(
                 build_story, story["src_path"], voice_path, body, out, tr, d / f"tmp_{item['id']}", build_rep,
                 mirror=bool(story["mirror"]), music=track, music_level=prefs["music_level"],
-                loop=bool(story["loop"])))
+                loop=bool(story["loop"]), subs_pos=prefs["subs_pos"]))
         except Exception as e:  # noqa: BLE001
             log.exception("сборка %s", item["id"])
             self.db.update_story_script(item["id"], status="failed", error=f"{type(e).__name__}: {e}"[:500])

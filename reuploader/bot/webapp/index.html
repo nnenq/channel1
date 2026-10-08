@@ -81,6 +81,15 @@
   body.dirty .toast { bottom: 84px; }
   button.bin { background: transparent; color: var(--danger); padding: 4px 6px; font-size: 16px; flex: none; }
   button:disabled { opacity: .45; }
+  .subsPhone { position: relative; width: 76px; height: 135px; flex: none; border-radius: 10px; cursor: pointer;
+    border: 2px solid var(--hint); overflow: hidden; touch-action: manipulation;
+    background: linear-gradient(var(--sep), transparent 22%, transparent 78%, var(--sep)); }
+  .subsYt { position: absolute; left: 0; right: 0; bottom: 0; height: 18%; pointer-events: none;
+    background: repeating-linear-gradient(45deg, color-mix(in srgb, var(--hint) 30%, transparent) 0 4px, transparent 4px 8px); }
+  .subsCap { position: absolute; left: 8%; right: 8%; transform: translateY(-50%); pointer-events: none;
+    background: #ffd400; color: #000; font: 700 8px/1.7 Arial, sans-serif; text-align: center; border-radius: 3px;
+    transition: top .15s; }
+  .subsCap.auto { background: var(--sep); color: var(--hint); }
 </style>
 </head>
 <body>
@@ -884,6 +893,7 @@ function renderStory(st) {
         <label class="switch"><input type="checkbox" ${f.mirror ? "checked" : ""} onchange="storySet('mirror', this.checked)"><span></span></label></div>
       <div class="row"><div class="grow">🔁 Петля<div class="sub">конец ролика плавно переходит в начало — зритель смотрит второй круг и не замечает повтора</div></div>
         <label class="switch"><input type="checkbox" ${f.loop !== false ? "checked" : ""} onchange="storySet('loop', this.checked)"><span></span></label></div>
+      ${subsPosPicker()}
       ${storyTtsBlock()}
       ${f.kind === "chat" ? "" : `<div class="row"><button class="wide" onclick="storyRun(${st.id})">${f.kind === "manual" ? "Подобрать сцены под мой текст" : "✍️ Написать сценарии"}</button></div>`}`;
   }
@@ -1022,9 +1032,48 @@ async function showCut(jid) {
 
 // ---------- фоновая музыка ----------
 let musicMeta = null, musicAudio = null;
+let musicLoading = false;
 async function loadMusic() {
+  musicLoading = true;
   const d = await api("GET", "/api/music").catch(() => null);
-  if (d) { musicMeta = d; renderMusic(); if (cutLast && /^#cut\d+/.test(location.hash) && +location.hash.slice(4) === cutLast.id) renderJob(cutLast); }
+  if (d) { musicMeta = d; renderMusic(); if (cutLast && /^#cut\d+/.test(location.hash) && +location.hash.slice(4) === cutLast.id) renderJob(cutLast);
+    if (window._story && document.getElementById("storyBox")) renderStory(window._story); }
+}
+
+// ---------- где стоят наши субтитры (одна настройка для обработки видео и сценариев) ----------
+const SUBS_AUTO_AT = 69;          // «Авто» без старых субтитров: чуть ниже центра, над кнопками YouTube
+function subsPosPicker() {
+  if (!musicMeta && !musicLoading) loadMusic();
+  const p = +(musicMeta?.subs_pos || 0), at = p || SUBS_AUTO_AT;
+  const hint = !p ? "Сейчас «Авто»: на месте старых субтитров, а если их не было — чуть ниже центра."
+    : p >= 80 ? "⚠️ Так низко их могут закрыть название ролика и кнопки YouTube."
+    : p <= 12 ? "⚠️ Так высоко их может закрыть верхняя панель YouTube."
+    : `Сейчас — на ${p}% от верха кадра.`;
+  return `<div class="row" style="align-items:flex-start;gap:14px">
+    <div class="subsPhone" onclick="subsPosTap(event, this)">
+      <div class="subsYt"></div><div class="subsCap${p ? "" : " auto"}" style="top:${at}%">${p ? "SUBTITLES" : "авто"}</div></div>
+    <div class="grow" style="min-width:0">📍 Где субтитры
+      <div class="sub" style="margin:2px 0 8px">Нажми на экранчик — туда и встанут. ${hint}
+        Полоски внизу — место, где YouTube показывает название и кнопки.</div>
+      <div class="seg">${[[0, "Авто"], [18, "Вверху"], [50, "Центр"], [76, "Внизу"]].map(([v, t]) =>
+        `<button class="${p === v ? "on" : ""}" onclick="subsPosSet(${v})">${t}</button>`).join("")}</div>
+      ${p ? `<div class="seg" style="margin-top:6px"><button onclick="subsPosSet(${Math.max(8, p - 3)})">▲ выше</button>
+        <button onclick="subsPosSet(${Math.min(88, p + 3)})">▼ ниже</button></div>` : ""}</div></div>`;
+}
+function subsPosTap(e, el) {
+  const r = el.getBoundingClientRect();
+  subsPosSet(Math.round((e.clientY - r.top) / r.height * 100));
+}
+async function subsPosSet(v) {
+  v = v <= 0 ? 0 : Math.max(8, Math.min(88, Math.round(v)));
+  if (musicMeta) { musicMeta.subs_pos = v; subsPosRerender(); }       // сразу на экране, не ждём сервер
+  const d = await guarded(() => api("PATCH", "/api/music", { subs_pos: v }));
+  if (d) { musicMeta = d; haptic("success"); subsPosRerender(); }
+}
+function subsPosRerender() {
+  renderMusic();
+  if (cutLast && document.getElementById("cutJob") && /^#cut\d+/.test(location.hash)) renderJob(cutLast);
+  if (window._story && document.getElementById("storyBox")) renderStory(window._story);
 }
 function renderMusic() {
   const box = document.getElementById("musicBox"), m = musicMeta;
@@ -1040,6 +1089,7 @@ function renderMusic() {
     ${m.tracks.map(t => musicRow(t.name, "🎶 " + t.name, fmtSize(t.size), true, true)).join("")}
     ${m.tracks.length < m.max_tracks ? `<div class="row"><input type="file" id="musicFile" accept="audio/*" class="grow"></div>
       <div class="row"><button class="wide ghost" id="musicUp" onclick="musicUpload()">➕ Добавить трек</button></div>` : ""}
+    ${subsPosPicker()}
     <div class="hint" style="padding:0 16px 8px">Где брать музыку: YouTube Студия → <b>Фонотека</b> — там треки без Content ID,
       их можно скачать бесплатно. Популярные песни не ставь: YouTube заберёт монетизацию или заблокирует ролик.
       До ${m.max_tracks} треков, каждый до ${m.max_mb} МБ.</div>`;
@@ -1186,6 +1236,7 @@ function comboForm(j) {
       <div class="grow">${FRAME_INFO[k][0]} ${esc(frames[k] || k)}<div class="sub">${FRAME_INFO[k][1]}</div></div></div>`).join("")}
     <div class="row sub">Дополнительно — можно включить всё сразу</div>
     ${sw("subs", c.subs, "🔤 Наши субтитры", "анимированные, по речи")}
+    ${c.subs ? subsPosPicker() : ""}
     ${sw("uniq", c.uniq, "✨ Уникализация", "лёгкий зум и наклон, цвет, скорость — у каждого ролика свои")}
     ${sw("loop", c.loop, "🔁 Петля", "конец без паузы и «подпишись», последний кадр плавно переходит в первый — ролик смотрят по второму кругу")}
     ${sw("music", music, "🎵 Фоновая музыка", "тише голоса; трек выбирается в разделе «Оформление»")}

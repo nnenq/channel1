@@ -75,15 +75,37 @@ def _animated_events(start, end, group):
     return events
 
 
-def to_ass(words, width, height, path, animated=True, overlay=None, overlay_until=None, size=None, margin_v=None):
+POS_MIN, POS_MAX = 8, 88          # где можно поставить субтитры: % высоты кадра от верха (центр строки)
+
+
+def clean_pos(pos):
+    """Выбор «где субтитры»: 0 — авто, иначе POS_MIN..POS_MAX (% от верха)."""
+    try:
+        pos = int(round(float(pos or 0)))
+    except (TypeError, ValueError):
+        return 0
+    return 0 if pos <= 0 else max(POS_MIN, min(POS_MAX, pos))
+
+
+def margin_for(pos, height, size):
+    """Отступ снизу (MarginV) для строки, центр которой на pos % высоты от верха."""
+    return max(round(size * 0.3), round(height * (1 - pos / 100) - size * 0.6))
+
+
+def to_ass(words, width, height, path, animated=True, overlay=None, overlay_until=None, size=None, margin_v=None,
+           pos=0):
     """Пишет .ass для видео width×height. -> path или None, если слов нет.
     overlay — надпись-крючок сверху кадра (до overlay_until секунд, по умолчанию — до конца).
-    size, margin_v — свой размер шрифта и отступ снизу (по умолчанию 4,5 % и 28 % высоты)."""
+    size, margin_v — свой размер шрифта и отступ снизу (по умолчанию 4,5 % и 28 % высоты).
+    pos — выбор пользователя «где субтитры» (% от верха, см. clean_pos): важнее margin_v."""
     lines = groups(words)
     if not lines and not overlay:
         return None
     w, h = width or 1080, height or 1920
     size = size or round(h * 0.045)
+    pos = clean_pos(pos)
+    if pos:
+        margin_v = margin_for(pos, h, size)
     margin_v = round(h * 0.28) if margin_v is None else margin_v     # выше нижнего интерфейса Shorts
     header = f"""[Script Info]
 ScriptType: v4.00+

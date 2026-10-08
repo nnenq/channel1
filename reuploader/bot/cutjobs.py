@@ -82,6 +82,10 @@ def cancel_button(jid):
     return [[{"text": "⏹ Отменить", "callback_data": f"cancel:{jid}"}]]
 
 
+def pos_text(pos):
+    return f", на {pos}% от верха" if pos else ""
+
+
 def report_text(report):
     """Отчёт задачи для чата и панели."""
     if report.get("kind") == "combo":
@@ -89,7 +93,8 @@ def report_text(report):
 
         o = report["options"]
         lines = [f"🖼 Кадр: {FRAMES.get(o['frame'], o['frame'])}"]
-        lines.append(f"🔤 Наши субтитры: {report.get('words', 0)} слов" if o["subs"] else "🔤 Без наших субтитров")
+        lines.append(f"🔤 Наши субтитры: {report.get('words', 0)} слов{pos_text(report.get('subs_pos'))}"
+                     if o["subs"] else "🔤 Без наших субтитров")
         if o["uniq"]:
             u = report.get("uniq") or {}
             lines.append(f"✨ Уникализация: зум {u.get('zoom')}, наклон {u.get('rotate_deg')}°, "
@@ -113,7 +118,7 @@ def report_text(report):
         return "\n".join(lines)
     if report.get("kind") == "subs":
         text = (f"🔤 Субтитры заменены: {SUBS_MODE_RU.get(report['mode'], report['mode'])}; "
-                f"наши — по речи ({report['words']} слов).")
+                f"наши — по речи ({report['words']} слов{pos_text(report.get('subs_pos'))}).")
         if report.get("music"):
             text += f"\n🎵 Фоновая музыка: {report['music']} (приглушается, когда говорят)."
         return text
@@ -336,7 +341,8 @@ class CutWorker:
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
                 replace_subtitles, job["src_path"], out, self.transcriber(jid), job_dir(self.s, jid) / "tmp",
-                progress, SUBS_MODES[job["mode"]], track, prefs["music_level"], False))
+                progress, SUBS_MODES[job["mode"]], track, prefs["music_level"], False,
+                subs_pos=prefs["subs_pos"]))
         except Exception as e:  # noqa: BLE001
             if jid in self.stop:
                 return await self._cancelled(job, msg)
@@ -399,7 +405,7 @@ class CutWorker:
         try:
             report = await asyncio.get_running_loop().run_in_executor(None, partial(
                 cb.run, job["src_path"], out, opts, make_tr, job_dir(self.s, jid) / "tmp", progress,
-                track, prefs["music_level"]))
+                track, prefs["music_level"], prefs["subs_pos"]))
         except Exception as e:  # noqa: BLE001
             if jid in self.stop:
                 return await self._cancelled(job, msg)

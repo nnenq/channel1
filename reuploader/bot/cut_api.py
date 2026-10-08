@@ -281,6 +281,10 @@ class CutApi:
         kw = {k: int(bool(body[k])) for k in ("music_on", "enhance") if k in body}
         if body.get("music_level") in mu.LEVELS:
             kw["music_level"] = body["music_level"]
+        if "subs_pos" in body:                 # где наши субтитры: 0 — авто, иначе % высоты от верха
+            from ..subtitles import clean_pos
+
+            kw["subs_pos"] = clean_pos(body["subs_pos"])
         if "music_track" in body:
             choice = str(body["music_track"] or "")
             ok = (not choice or choice in {b["id"] for b in mu.builtin_choices()}

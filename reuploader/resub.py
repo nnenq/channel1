@@ -534,13 +534,20 @@ def render(src, out, lay, subs=None, progress=None, strips=None, look=None):
 
 
 def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="erase", music=None,
-                      music_level="mid", enhance=False, loop=False, subs=True):
+                      music_level="mid", enhance=False, loop=False, subs=True, subs_pos=0):
     """Всё вместе. progress(этап, доля). music — путь к фоновому треку (или None),
     music_level — low|mid|high, enhance — чуть ярче цвета и резкость, loop — «петля» (конец без паузы
     и призывов, картинка перетекает в первый кадр, см. reuploader.loop), subs=False — речь распознаётся
-    только для «петли», наши субтитры не вшиваются. -> dict для отчёта."""
+    только для «петли», наши субтитры не вшиваются. subs_pos — где наши субтитры (% высоты от верха,
+    0 — авто: на месте старых или стандартно над интерфейсом Shorts). -> dict для отчёта."""
+    from functools import partial
+
     from .music import start_offset
-    from .subtitles import to_ass
+    from .subtitles import clean_pos
+    from .subtitles import to_ass as _to_ass
+
+    subs_pos = clean_pos(subs_pos)
+    to_ass = partial(_to_ass, pos=subs_pos)
 
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -618,4 +625,5 @@ def replace_subtitles(src, out, transcriber, work_dir, progress=None, method="er
     check_video(out)
     return {"mode": mode, "method": method, "bands": lay.bands, "content": lay.content, "keep": lay.keep,
             "words": len(words), "size": [lay.width, lay.height],
-            "music": Path(music).name if music else None, "enhance": bool(enhance), "loop": loop_rep}
+            "music": Path(music).name if music else None, "enhance": bool(enhance), "loop": loop_rep,
+            "subs_pos": subs_pos}

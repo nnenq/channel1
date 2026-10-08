@@ -166,7 +166,7 @@ def render(src, voice, clips, out, subs=None, crf=21, progress=None, mirror=Fals
 
 
 def build_story(src, voice, script, out, transcriber, work_dir, progress=None, fast_cuts=True, mirror=False,
-                music=None, music_level="mid", loop=True):
+                music=None, music_level="mid", loop=True, subs_pos=0):
     """Всё вместе. -> dict(duration, lines, words) для отчёта.
     progress(этап, доля 0..1) — распознавание голоса 0–35 %, сборка видео 35–100 %."""
     from ..subtitles import to_ass
@@ -194,7 +194,7 @@ def build_story(src, voice, script, out, transcriber, work_dir, progress=None, f
     if progress:
         progress("ищу смены кадров", 0.33)
     clips = plan_clips(lines, spans, probe(src).duration, cuts if fast_cuts else None)
-    subs = to_ass(words, W, H, work / "story.ass", overlay=script.get("overlay") or None,
+    subs = to_ass(words, W, H, work / "story.ass", overlay=script.get("overlay") or None, pos=subs_pos,
                   overlay_until=vinfo.duration)
     end = None
     if loop:
